@@ -1,0 +1,27 @@
+{
+  "name": "astra-local-agent",
+  "version": "1.0.0",
+  "description": "Astra — Personal Local AI Agent powered by OpenClaw + Ollama",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "npx tsc",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Zvimarmor/Astra.git"
+  },
+  "keywords": ["ai-agent", "local-llm", "openclaw", "ollama", "personal-assistant"],
+  "author": "Zvi Marmor",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^17.4.2",
+    "googleapis": "^171.4.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
+  }
+}

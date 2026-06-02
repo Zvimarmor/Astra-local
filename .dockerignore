@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+data/service_account.json
+*.pem
+.git
+.gitignore
+*.md
+!README.md

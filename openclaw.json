@@ -1,0 +1,73 @@
+{
+  "$schema": "https://openclaw.ai/schema/config.json",
+  "agent": {
+    "name": "Astra",
+    "description": "Personal AI assistant for task management, expense tracking, habits, and calendar",
+    "personality": "You are Astra, a helpful and efficient personal assistant. You communicate primarily in English but understand Hebrew. You are proactive, concise, and always use your tools to take action rather than just talking."
+  },
+  "model": {
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "nous-hermes",
+    "fallback_model": "llama3",
+    "temperature": 0.7,
+    "max_tokens": 2048
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "adapter": "whatsapp-baileys",
+      "config": {
+        "auth_dir": "./data/whatsapp_auth"
+      }
+    }
+  },
+  "knowledge": {
+    "directories": ["./knowledge"],
+    "file_extensions": [".md"],
+    "index_on_startup": true
+  },
+  "skills": {
+    "directory": "./skills"
+  },
+  "tools": {
+    "custom_directory": "./tools",
+    "allowed": [
+      "get_current_time",
+      "add_task",
+      "list_tasks",
+      "complete_task",
+      "delete_task",
+      "add_expense",
+      "get_expense_summary",
+      "add_calendar_event",
+      "list_calendar_events",
+      "track_habit",
+      "log_habit",
+      "list_habits",
+      "get_daily_status",
+      "web_search"
+    ]
+  },
+  "scheduler": {
+    "timezone": "Asia/Jerusalem",
+    "heartbeats": [
+      {
+        "name": "morning_briefing",
+        "cron": "0 8 * * *",
+        "skill": "daily_briefing",
+        "message": "Generate the morning briefing."
+      },
+      {
+        "name": "evening_summary",
+        "cron": "0 20 * * *",
+        "skill": "daily_briefing",
+        "message": "Generate the evening summary."
+      }
+    ]
+  },
+  "storage": {
+    "type": "sqlite",
+    "path": "./data/memory.db"
+  }
+}

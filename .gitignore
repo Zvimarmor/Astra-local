@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+data/service_account.json
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+*.pem
+auth_info_baileys/
