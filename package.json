@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Zvimarmor/Astra.git"
+    "url": "https://github.com/Zvimarmor/Astra-local.git"
   },
   "keywords": ["ai-agent", "local-llm", "openclaw", "ollama", "personal-assistant"],
   "author": "Zvi Marmor",
