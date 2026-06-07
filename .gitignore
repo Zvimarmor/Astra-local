@@ -1,9 +1,13 @@
 node_modules/
 dist/
+dist-services/
 .env
 data/service_account.json
 data/memory.db
 data/memory.db-shm
 data/memory.db-wal
+data/media/**
+!data/media/whatsapp/.gitkeep
+data/whatsapp_auth/
 *.pem
 auth_info_baileys/

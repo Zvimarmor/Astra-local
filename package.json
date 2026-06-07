@@ -5,6 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "npx tsc",
+    "build:services": "npx tsc -p tsconfig.services.json",
+    "build:all": "npm run build && npm run build:services",
+    "listener": "node dist-services/whatsapp-listener.js",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "repository": {
@@ -15,12 +18,17 @@
   "author": "Zvi Marmor",
   "license": "MIT",
   "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.4.2",
-    "googleapis": "^171.4.0"
+    "googleapis": "^171.4.0",
+    "imapflow": "^1.0.171",
+    "mailparser": "^3.7.2",
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/mailparser": "^3.4.5",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3"
   }

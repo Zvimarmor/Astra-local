@@ -15,10 +15,17 @@
   },
   "channels": {
     "whatsapp": {
-      "enabled": true,
+      "enabled": false,
       "adapter": "whatsapp-baileys",
       "config": {
         "auth_dir": "./data/whatsapp_auth"
+      }
+    },
+    "cli": {
+      "enabled": true,
+      "adapter": "cli",
+      "config": {
+        "prompt": "You > "
       }
     }
   },
@@ -46,7 +53,12 @@
       "log_habit",
       "list_habits",
       "get_daily_status",
-      "web_search"
+      "web_search",
+      "propose_new_fact",
+      "approve_fact",
+      "list_whatsapp_media",
+      "list_recent_emails",
+      "read_email"
     ]
   },
   "scheduler": {

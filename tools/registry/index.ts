@@ -5,6 +5,9 @@ import { calendarTools } from '../calendar';
 import { habitTools } from '../habits';
 import { searchTools } from '../search';
 import { dailyStatusTools } from '../daily-status';
+import { memoryTools } from '../memory';
+import { whatsappMediaTools } from '../whatsapp-media';
+import { emailTools } from '../email';
 
 /**
  * Tool Registry — OpenClaw Integration
@@ -52,6 +55,15 @@ export const toolRegistry: Record<string, Tool> = {
 
     // ─── Daily Status ────────────────────────────────────────────
     ...dailyStatusTools,
+
+    // ─── Memory ──────────────────────────────────────────────────
+    ...memoryTools,
+
+    // ─── WhatsApp Media (Read-Only) ───────────────────────────────────
+    ...whatsappMediaTools,
+
+    // ─── Email (Read-Only IMAP) ───────────────────────────────────────
+    ...emailTools,
 };
 
 /**

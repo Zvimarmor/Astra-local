@@ -253,7 +253,68 @@ ln -s /Volumes/SanDisk_Extreme ~/ExternalSSD
 
 ---
 
-## 10. Future: Exo Distributed Computing (iPad)
+## 10. WhatsApp Media Listener (Read-Only)
+
+The WhatsApp media listener runs as a **separate background service** from Astra. It connects to WhatsApp via Baileys in **read-only mode** — it downloads incoming media (photos, videos, documents) but **cannot send messages**.
+
+### 10.1 First Run (Authentication)
+```bash
+cd ~/MyProjects/Astra
+npm run build:services
+npm run listener
+```
+
+On first run, a QR code will appear. Scan it with WhatsApp on your phone to link the device. After authentication, credentials are saved in `data/whatsapp_auth/` and subsequent starts won't require scanning.
+
+### 10.2 Auto-Start on Boot (launchd)
+
+Create a separate launch agent for the listener:
+
+```bash
+cat > ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.astra.whatsapp-listener</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/YOUR_USERNAME/MyProjects/Astra/dist-services/whatsapp-listener.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/MyProjects/Astra</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/MyProjects/Astra/data/whatsapp-listener.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/MyProjects/Astra/data/whatsapp-listener-error.log</string>
+</dict>
+</plist>
+EOF
+
+# Load it
+launchctl load ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist
+```
+
+> ⚠️ Replace `YOUR_USERNAME` with your actual macOS username.
+
+### 10.3 Verify Listener
+
+| Check | Command | Expected |
+|---|---|---|
+| Listener running | `launchctl list \| grep whatsapp` | Shows the service |
+| Media saved | `ls data/media/whatsapp/` | Media files appear |
+| DB entries | `sqlite3 data/memory.db "SELECT * FROM whatsapp_media LIMIT 5;"` | Metadata rows |
+
+---
+
+## 11. Future: Exo Distributed Computing (iPad)
+
 
 > **Note**: This is exploratory. The iPad may not always be on the network.
 

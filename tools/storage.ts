@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import { config } from './config';
 
 const db = new Database(config.dbPath);
@@ -38,6 +40,25 @@ db.exec(`
         description TEXT NOT NULL,
         date TEXT NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS pending_facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposed_fact TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        resolved_at DATETIME
+    );
+
+    CREATE TABLE IF NOT EXISTS whatsapp_media (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        mime_type TEXT,
+        caption TEXT,
+        file_path TEXT NOT NULL,
+        file_size INTEGER,
+        received_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 `);
 
@@ -186,4 +207,115 @@ export function getExpenseSummary(period: string = 'week'): {
         total: grandTotal,
         summary: `Total expenses (${period}): ${grandTotal} NIS`
     };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  PENDING FACTS (Approval-based Memory)
+// ═══════════════════════════════════════════════════════════════════
+
+const STALE_TIMEOUT_MINUTES = 10;
+
+/**
+ * Insert a new pending fact. Auto-declines any stale pending facts
+ * older than STALE_TIMEOUT_MINUTES before inserting.
+ */
+export function addPendingFact(fact: string): number {
+    try {
+        // Auto-decline stale pending facts
+        const cutoff = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+        db.prepare(
+            "UPDATE pending_facts SET status = 'declined', resolved_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND created_at < ?"
+        ).run(cutoff);
+
+        // Also decline any remaining pending facts (one-at-a-time policy)
+        db.prepare(
+            "UPDATE pending_facts SET status = 'declined', resolved_at = CURRENT_TIMESTAMP WHERE status = 'pending'"
+        ).run();
+
+        const stmt = db.prepare('INSERT INTO pending_facts (proposed_fact) VALUES (?)');
+        const info = stmt.run(fact);
+        return info.lastInsertRowid as number;
+    } catch (err: any) {
+        console.error('[DB] Failed to add pending fact:', err.message);
+        throw err;
+    }
+}
+
+/**
+ * Get the most recent pending fact awaiting approval, or null.
+ */
+export function getActivePendingFact(): { id: number; proposed_fact: string } | null {
+    try {
+        const stmt = db.prepare(
+            "SELECT id, proposed_fact FROM pending_facts WHERE status = 'pending' ORDER BY id DESC LIMIT 1"
+        );
+        const row = stmt.get() as { id: number; proposed_fact: string } | undefined;
+        return row || null;
+    } catch (err: any) {
+        console.error('[DB] Failed to get pending fact:', err.message);
+        return null;
+    }
+}
+
+/**
+ * Resolve a pending fact as approved or declined.
+ */
+export function resolvePendingFact(id: number, approved: boolean): boolean {
+    try {
+        const status = approved ? 'approved' : 'declined';
+        const stmt = db.prepare(
+            'UPDATE pending_facts SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?'
+        );
+        const info = stmt.run(status, id, 'pending');
+        return info.changes > 0;
+    } catch (err: any) {
+        console.error('[DB] Failed to resolve pending fact:', err.message);
+        return false;
+    }
+}
+
+/**
+ * Append a fact to knowledge/learned_facts.md.
+ * Uses fs.appendFileSync with the 'a' flag — strictly append-only.
+ * Never reads, truncates, or modifies existing content.
+ */
+export function appendToLearnedFacts(fact: string): void {
+    try {
+        const filePath = path.join(process.cwd(), 'knowledge', 'learned_facts.md');
+        const date = new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
+        const entry = `- ${fact} _(learned ${date})_\n`;
+        fs.appendFileSync(filePath, entry, { encoding: 'utf-8', flag: 'a' });
+        console.log(`[Memory] Appended fact to learned_facts.md: "${fact}"`);
+    } catch (err: any) {
+        console.error('[Memory] Failed to append fact:', err.message);
+        throw err;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  WHATSAPP MEDIA (Read-Only Query)
+// ═══════════════════════════════════════════════════════════════════
+
+export function getRecentWhatsAppMedia(
+    count: number = 10,
+    mediaType?: string
+): { id: number; sender: string; media_type: string; mime_type: string | null; caption: string | null; file_path: string; file_size: number | null; received_at: string }[] {
+    try {
+        let query = 'SELECT id, sender, media_type, mime_type, caption, file_path, file_size, received_at FROM whatsapp_media';
+        const params: any[] = [];
+
+        if (mediaType) {
+            query += ' WHERE media_type = ?';
+            params.push(mediaType);
+        }
+
+        query += ' ORDER BY id DESC LIMIT ?';
+        params.push(count);
+
+        const stmt = db.prepare(query);
+        return stmt.all(...params) as any[];
+    } catch (err: any) {
+        console.error('[DB] Failed to query WhatsApp media:', err.message);
+        return [];
+    }
 }
