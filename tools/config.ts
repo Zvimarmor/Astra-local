@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import os from 'os';
 
 dotenv.config();
 
@@ -28,6 +29,15 @@ export const config = {
             password: process.env.IMAP_PASSWORD_UNI || '',
         },
     } as Record<string, { host: string; port: number; user: string; password: string }>,
+
+    // Piper TTS (local text-to-speech)
+    piperBinaryPath: process.env.PIPER_BINARY_PATH || '/opt/homebrew/bin/piper',
+    piperVoiceModel: process.env.PIPER_VOICE_MODEL || path.join(os.homedir(), 'piper-voices', 'en-us-amy-medium.onnx'),
+    ttsOutputDir: path.join(process.cwd(), 'data', 'media', 'tts'),
+
+    // Dashboard (health check)
+    dashboardPort: parseInt(process.env.DASHBOARD_PORT || '3001', 10),
+    dashboardToken: process.env.DASHBOARD_TOKEN || '',
 };
 
 // Boot-time validation

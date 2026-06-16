@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astra — Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: rgba(20, 27, 45, 0.85);
+            --bg-card-hover: rgba(30, 40, 65, 0.9);
+            --border: rgba(99, 130, 255, 0.15);
+            --border-active: rgba(99, 130, 255, 0.4);
+            --text-primary: #e8ecf4;
+            --text-secondary: #8892a8;
+            --text-muted: #5a6478;
+            --accent: #6382ff;
+            --accent-glow: rgba(99, 130, 255, 0.25);
+            --green: #34d399;
+            --yellow: #fbbf24;
+            --red: #f87171;
+            --gradient-1: linear-gradient(135deg, #6382ff 0%, #a855f7 100%);
+            --gradient-2: linear-gradient(135deg, #34d399 0%, #06b6d4 100%);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 20%, rgba(99, 130, 255, 0.06) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%);
+            z-index: -1;
+        }
+
+        /* ─── Header ─────────────────────────────────────────── */
+        .header {
+            padding: 28px 32px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: rgba(10, 14, 26, 0.8);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo {
+            width: 38px;
+            height: 38px;
+            background: var(--gradient-1);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 700;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+        }
+
+        .header h1 span {
+            color: var(--text-secondary);
+            font-weight: 400;
+            font-size: 14px;
+            margin-left: 8px;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .refresh-info {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .status-dot.green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+        .status-dot.yellow { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+        .status-dot.red { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(0.9); }
+        }
+
+        /* ─── Grid ────────────────────────────────────────────── */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+            padding: 24px 32px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* ─── Cards ───────────────────────────────────────────── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-active);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .card-icon {
+            font-size: 20px;
+        }
+
+        .card.full-width {
+            grid-column: 1 / -1;
+        }
+
+        /* ─── Metric ──────────────────────────────────────────── */
+        .metric {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+
+        .metric-value {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -1px;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .metric-unit {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .metric-label {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        /* ─── Service Status ──────────────────────────────────── */
+        .service-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .service-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .service-name {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .service-status {
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .service-status.ok {
+            background: rgba(52, 211, 153, 0.15);
+            color: var(--green);
+        }
+
+        .service-status.warn {
+            background: rgba(251, 191, 36, 0.15);
+            color: var(--yellow);
+        }
+
+        .service-status.error {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--red);
+        }
+
+        /* ─── Progress Bar ────────────────────────────────────── */
+        .progress-list {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .progress-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+        }
+
+        .progress-category {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .progress-amount {
+            color: var(--text-secondary);
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+        }
+
+        .progress-fill.ok { background: var(--gradient-2); }
+        .progress-fill.warning { background: linear-gradient(90deg, var(--yellow), #f59e0b); }
+        .progress-fill.over { background: linear-gradient(90deg, var(--red), #dc2626); }
+
+        /* ─── Stat Grid ───────────────────────────────────────── */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .stat-value {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            background: var(--gradient-2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* ─── Financial ───────────────────────────────────────── */
+        .finance-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .finance-row:last-child {
+            border-bottom: none;
+            padding-top: 14px;
+            font-weight: 700;
+        }
+
+        .finance-label {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .finance-value {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .finance-value.income { color: var(--green); }
+        .finance-value.expense { color: var(--red); }
+        .finance-value.net-positive { color: var(--green); }
+        .finance-value.net-negative { color: var(--red); }
+
+        /* ─── Error State ─────────────────────────────────────── */
+        .error-message {
+            text-align: center;
+            padding: 40px;
+            color: var(--red);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+
+        /* ─── Responsive ──────────────────────────────────────── */
+        @media (max-width: 768px) {
+            .header { padding: 18px 16px; }
+            .grid { padding: 16px; gap: 14px; }
+            .grid { grid-template-columns: 1fr; }
+            .card { padding: 18px; }
+            .metric-value { font-size: 26px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <div class="logo">✦</div>
+            <h1>Astra <span>Dashboard</span></h1>
+        </div>
+        <div class="header-right">
+            <span class="refresh-info" id="lastRefresh">Loading...</span>
+            <span class="status-dot" id="globalStatus"></span>
+        </div>
+    </div>
+
+    <div class="grid" id="dashboard">
+        <div class="loading">Connecting to Astra...</div>
+    </div>
+
+    <script>
+    (function() {
+        const REFRESH_INTERVAL = 30000; // 30 seconds
+        const token = new URLSearchParams(window.location.search).get('token') || '';
+
+        async function fetchData() {
+            try {
+                const res = await fetch(`/api/status?token=${encodeURIComponent(token)}`);
+                if (res.status === 401) {
+                    document.getElementById('dashboard').innerHTML =
+                        '<div class="error-message">🔒 Invalid or missing token. Add ?token=YOUR_TOKEN to the URL.</div>';
+                    return null;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return await res.json();
+            } catch (err) {
+                document.getElementById('dashboard').innerHTML =
+                    `<div class="error-message">⚠️ Failed to connect: ${err.message}</div>`;
+                return null;
+            }
+        }
+
+        function formatUptime(seconds) {
+            const d = Math.floor(seconds / 86400);
+            const h = Math.floor((seconds % 86400) / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            if (d > 0) return `${d}d ${h}h`;
+            if (h > 0) return `${h}h ${m}m`;
+            return `${m}m`;
+        }
+
+        function formatNIS(amount) {
+            return new Intl.NumberFormat('en-IL', { style: 'decimal', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
+        }
+
+        function render(data) {
+            const grid = document.getElementById('dashboard');
+            const globalDot = document.getElementById('globalStatus');
+            const refreshEl = document.getElementById('lastRefresh');
+
+            // Global status
+            const isHealthy = data.ollama?.connected && data.system;
+            globalDot.className = `status-dot ${isHealthy ? 'green' : 'red'}`;
+            refreshEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+            let html = '';
+
+            // ─── System Card ─────────────────────────────────
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">System</span>
+                    <span class="card-icon">🖥️</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-value">${formatUptime(data.system?.uptime || 0)}</span>
+                    <span class="metric-unit">uptime</span>
+                </div>
+                <div class="metric-label">${data.system?.hostname || 'Unknown'} · Node ${data.system?.nodeVersion || '?'} · ${data.system?.memoryUsedMB || '?'}/${data.system?.memoryTotalMB || '?'} MB RAM</div>
+            </div>`;
+
+            // ─── Services Card ───────────────────────────────
+            const ollamaStatus = data.ollama?.connected ? 'ok' : 'error';
+            const ollamaLabel = data.ollama?.connected ? 'Connected' : 'Offline';
+            const modelText = data.ollama?.models?.length
+                ? data.ollama.models.map(m => m.name).join(', ')
+                : 'No models';
+
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Services</span>
+                    <span class="card-icon">⚡</span>
+                </div>
+                <div class="service-list">
+                    <div class="service-row">
+                        <span class="service-name"><span class="status-dot ${ollamaStatus === 'ok' ? 'green' : 'red'}"></span> Ollama</span>
+                        <span class="service-status ${ollamaStatus}">${ollamaLabel}</span>
+                    </div>
+                    <div class="service-row">
+                        <span class="service-name">🤖 Models</span>
+                        <span style="font-size:12px;color:var(--text-secondary)">${modelText}</span>
+                    </div>
+                    <div class="service-row">
+                        <span class="service-name"><span class="status-dot green"></span> Dashboard</span>
+                        <span class="service-status ok">Running</span>
+                    </div>
+                </div>
+            </div>`;
+
+            // ─── Tasks Card ──────────────────────────────────
+            const tasks = data.database?.tasks || {};
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Tasks</span>
+                    <span class="card-icon">✅</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">${tasks.pending || 0}</div>
+                        <div class="stat-label">Pending</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${tasks.completed || 0}</div>
+                        <div class="stat-label">Completed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${tasks.recurring || 0}</div>
+                        <div class="stat-label">Recurring</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${tasks.highPriority || 0}</div>
+                        <div class="stat-label">🔴 High Priority</div>
+                    </div>
+                </div>
+            </div>`;
+
+            // ─── Financial Card ──────────────────────────────
+            const fin = data.financial || {};
+            const net = (fin.totalIncome || 0) - (fin.totalExpenses || 0);
+            const netClass = net >= 0 ? 'net-positive' : 'net-negative';
+            const netSign = net >= 0 ? '+' : '';
+
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Financial (This Month)</span>
+                    <span class="card-icon">💰</span>
+                </div>
+                <div class="finance-row">
+                    <span class="finance-label">📈 Income</span>
+                    <span class="finance-value income">${formatNIS(fin.totalIncome || 0)} ₪</span>
+                </div>
+                <div class="finance-row">
+                    <span class="finance-label">📉 Expenses</span>
+                    <span class="finance-value expense">${formatNIS(fin.totalExpenses || 0)} ₪</span>
+                </div>
+                <div class="finance-row">
+                    <span class="finance-label">💵 Net</span>
+                    <span class="finance-value ${netClass}">${netSign}${formatNIS(net)} ₪</span>
+                </div>
+            </div>`;
+
+            // ─── Budget Card ─────────────────────────────────
+            const budgets = data.budgets || [];
+            if (budgets.length > 0) {
+                html += `
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Budget Status</span>
+                        <span class="card-icon">📊</span>
+                    </div>
+                    <div class="progress-list">`;
+
+                for (const b of budgets) {
+                    const pct = Math.min(b.percent, 100);
+                    const cls = b.alert === 'over' ? 'over' : b.alert === 'warning' ? 'warning' : 'ok';
+                    html += `
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="progress-category">${b.category}</span>
+                                <span class="progress-amount">${formatNIS(b.spent)} / ${formatNIS(b.limit)} ₪ (${b.percent}%)</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill ${cls}" style="width: ${pct}%"></div>
+                            </div>
+                        </div>`;
+                }
+
+                html += `</div></div>`;
+            }
+
+            // ─── Habits Card ─────────────────────────────────
+            const habits = data.database?.habits || {};
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Habits</span>
+                    <span class="card-icon">🎯</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">${habits.total || 0}</div>
+                        <div class="stat-label">Tracked</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${habits.completedToday || 0}</div>
+                        <div class="stat-label">Done Today</div>
+                    </div>
+                </div>
+            </div>`;
+
+            // ─── Media Card ──────────────────────────────────
+            const media = data.database?.media || {};
+            html += `
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">WhatsApp Media</span>
+                    <span class="card-icon">📸</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">${media.total || 0}</div>
+                        <div class="stat-label">Total Files</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${media.images || 0}</div>
+                        <div class="stat-label">Images</div>
+                    </div>
+                </div>
+            </div>`;
+
+            grid.innerHTML = html;
+        }
+
+        async function refresh() {
+            const data = await fetchData();
+            if (data) render(data);
+        }
+
+        // Initial load
+        refresh();
+        // Auto-refresh
+        setInterval(refresh, REFRESH_INTERVAL);
+    })();
+    </script>
+</body>
+</html>

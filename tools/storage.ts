@@ -60,6 +60,33 @@ db.exec(`
         file_size INTEGER,
         received_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS budgets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL UNIQUE,
+        monthly_limit REAL NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS recurring_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        frequency TEXT NOT NULL,
+        day_of_week INTEGER,
+        day_of_month INTEGER,
+        last_generated_date TEXT,
+        active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS income (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        amount REAL NOT NULL,
+        source TEXT NOT NULL,
+        description TEXT NOT NULL,
+        date TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 `);
 
 // ═══════════════════════════════════════════════════════════════════
@@ -318,4 +345,211 @@ export function getRecentWhatsAppMedia(
         console.error('[DB] Failed to query WhatsApp media:', err.message);
         return [];
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  BUDGETS (Monthly Spending Limits)
+// ═══════════════════════════════════════════════════════════════════
+
+export function setBudget(category: string, monthlyLimit: number): void {
+    const stmt = db.prepare(
+        'INSERT INTO budgets (category, monthly_limit) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET monthly_limit = ?'
+    );
+    stmt.run(category.toLowerCase(), monthlyLimit, monthlyLimit);
+}
+
+export function getBudgets(): { category: string; monthly_limit: number }[] {
+    const stmt = db.prepare('SELECT category, monthly_limit FROM budgets ORDER BY category');
+    return stmt.all() as any[];
+}
+
+export function deleteBudget(category: string): boolean {
+    const stmt = db.prepare('DELETE FROM budgets WHERE LOWER(category) = ?');
+    const info = stmt.run(category.toLowerCase());
+    return info.changes > 0;
+}
+
+export function checkBudgetAlerts(): {
+    category: string;
+    spent: number;
+    limit: number;
+    percent: number;
+    alert: 'ok' | 'warning' | 'over';
+}[] {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+
+    const budgets = getBudgets();
+    return budgets.map(b => {
+        const row = db.prepare(
+            'SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE LOWER(category) = ? AND date >= ?'
+        ).get(b.category, monthStart) as { total: number };
+
+        const spent = row.total;
+        const percent = b.monthly_limit > 0 ? Math.round((spent / b.monthly_limit) * 100) : 0;
+        let alert: 'ok' | 'warning' | 'over' = 'ok';
+        if (percent >= 100) alert = 'over';
+        else if (percent >= 80) alert = 'warning';
+
+        return { category: b.category, spent, limit: b.monthly_limit, percent, alert };
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RECURRING TASKS
+// ═══════════════════════════════════════════════════════════════════
+
+export function addRecurringTask(
+    title: string,
+    priority: string = 'medium',
+    frequency: string,
+    dayOfWeek?: number,
+    dayOfMonth?: number
+): number {
+    const stmt = db.prepare(
+        'INSERT INTO recurring_tasks (title, priority, frequency, day_of_week, day_of_month) VALUES (?, ?, ?, ?, ?)'
+    );
+    const info = stmt.run(title, priority, frequency, dayOfWeek ?? null, dayOfMonth ?? null);
+    return info.lastInsertRowid as number;
+}
+
+export function getActiveRecurringTasks(): {
+    id: number; title: string; priority: string; frequency: string;
+    day_of_week: number | null; day_of_month: number | null; last_generated_date: string | null;
+}[] {
+    const stmt = db.prepare('SELECT id, title, priority, frequency, day_of_week, day_of_month, last_generated_date FROM recurring_tasks WHERE active = 1');
+    return stmt.all() as any[];
+}
+
+export function deactivateRecurringTask(id: number): boolean {
+    const stmt = db.prepare('UPDATE recurring_tasks SET active = 0 WHERE id = ?');
+    const info = stmt.run(id);
+    return info.changes > 0;
+}
+
+/**
+ * Generate real tasks from recurring templates that are due today.
+ * Returns the count of tasks generated.
+ */
+export function generateDueRecurringTasks(): number {
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
+    const dayOfWeek = new Date().getDay(); // 0=Sun, 6=Sat
+    const dayOfMonth = new Date().getDate();
+
+    const templates = getActiveRecurringTasks();
+    let generated = 0;
+
+    for (const t of templates) {
+        // Skip if already generated today
+        if (t.last_generated_date === today) continue;
+
+        let shouldGenerate = false;
+
+        if (t.frequency === 'daily') {
+            shouldGenerate = true;
+        } else if (t.frequency === 'weekly' && t.day_of_week !== null) {
+            shouldGenerate = dayOfWeek === t.day_of_week;
+        } else if (t.frequency === 'monthly' && t.day_of_month !== null) {
+            shouldGenerate = dayOfMonth === t.day_of_month;
+        }
+
+        if (shouldGenerate) {
+            addTask(t.title, t.priority);
+            db.prepare('UPDATE recurring_tasks SET last_generated_date = ? WHERE id = ?').run(today, t.id);
+            generated++;
+        }
+    }
+
+    return generated;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  INCOME (Financial Tracking)
+// ═══════════════════════════════════════════════════════════════════
+
+export function addIncome(amount: number, source: string, description: string): { id: number; amount: number; source: string } {
+    const date = new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
+    const stmt = db.prepare('INSERT INTO income (amount, source, description, date) VALUES (?, ?, ?, ?)');
+    const info = stmt.run(amount, source, description, date);
+    return { id: info.lastInsertRowid as number, amount, source };
+}
+
+export function getIncomeSummary(period: string = 'month'): {
+    period: string;
+    since: string;
+    sources: { source: string; total: number; count: number }[];
+    total: number;
+} {
+    const now = new Date();
+    let since: string;
+
+    if (period === 'year') {
+        since = `${now.getFullYear()}-01-01`;
+    } else if (period === 'week') {
+        const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        since = d.toISOString().split('T')[0];
+    } else {
+        // month (default)
+        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        since = d.toISOString().split('T')[0];
+    }
+
+    const stmt = db.prepare(`
+        SELECT source, SUM(amount) as total, COUNT(*) as count
+        FROM income
+        WHERE date >= ?
+        GROUP BY source
+        ORDER BY total DESC
+    `);
+    const rows = stmt.all(since) as { source: string; total: number; count: number }[];
+    const grandTotal = rows.reduce((sum, r) => sum + r.total, 0);
+
+    return { period, since, sources: rows, total: grandTotal };
+}
+
+export function getFinancialOverview(period: string = 'month'): {
+    period: string;
+    since: string;
+    total_income: number;
+    total_expenses: number;
+    net: number;
+    income_sources: { source: string; total: number }[];
+    expense_categories: { category: string; total: number }[];
+    summary: string;
+} {
+    const now = new Date();
+    let since: string;
+
+    if (period === 'year') {
+        since = `${now.getFullYear()}-01-01`;
+    } else if (period === 'week') {
+        const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        since = d.toISOString().split('T')[0];
+    } else {
+        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        since = d.toISOString().split('T')[0];
+    }
+
+    const incomeRows = db.prepare(
+        'SELECT source, SUM(amount) as total FROM income WHERE date >= ? GROUP BY source ORDER BY total DESC'
+    ).all(since) as { source: string; total: number }[];
+
+    const expenseRows = db.prepare(
+        'SELECT category, SUM(amount) as total FROM expenses WHERE date >= ? GROUP BY category ORDER BY total DESC'
+    ).all(since) as { category: string; total: number }[];
+
+    const totalIncome = incomeRows.reduce((s, r) => s + r.total, 0);
+    const totalExpenses = expenseRows.reduce((s, r) => s + r.total, 0);
+    const net = totalIncome - totalExpenses;
+
+    const netSign = net >= 0 ? '+' : '';
+    return {
+        period, since,
+        total_income: totalIncome,
+        total_expenses: totalExpenses,
+        net,
+        income_sources: incomeRows,
+        expense_categories: expenseRows,
+        summary: `Financial Overview (${period}): Income ${totalIncome} NIS, Expenses ${totalExpenses} NIS, Net ${netSign}${net} NIS`,
+    };
 }

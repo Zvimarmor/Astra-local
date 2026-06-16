@@ -8,6 +8,10 @@ import { dailyStatusTools } from '../daily-status';
 import { memoryTools } from '../memory';
 import { whatsappMediaTools } from '../whatsapp-media';
 import { emailTools } from '../email';
+import { budgetTools } from '../budget';
+import { recurringTaskTools } from '../recurring-tasks';
+import { voiceTools } from '../voice';
+import { emailDigestTools } from '../email-digest';
 
 /**
  * Tool Registry — OpenClaw Integration
@@ -41,8 +45,14 @@ export const toolRegistry: Record<string, Tool> = {
     // ─── Tasks ───────────────────────────────────────────────────
     ...taskTools,
 
-    // ─── Expenses ────────────────────────────────────────────────
+    // ─── Recurring Tasks ─────────────────────────────────────────
+    ...recurringTaskTools,
+
+    // ─── Expenses & Financial ────────────────────────────────────
     ...expenseTools,
+
+    // ─── Budgets ─────────────────────────────────────────────────
+    ...budgetTools,
 
     // ─── Calendar ────────────────────────────────────────────────
     ...calendarTools,
@@ -64,6 +74,12 @@ export const toolRegistry: Record<string, Tool> = {
 
     // ─── Email (Read-Only IMAP) ───────────────────────────────────────
     ...emailTools,
+
+    // ─── Email Digest ─────────────────────────────────────────────────
+    ...emailDigestTools,
+
+    // ─── Voice (Piper TTS) ────────────────────────────────────────────
+    ...voiceTools,
 };
 
 /**

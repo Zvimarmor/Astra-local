@@ -45,8 +45,16 @@
       "list_tasks",
       "complete_task",
       "delete_task",
+      "add_recurring_task",
+      "list_recurring_tasks",
+      "remove_recurring_task",
       "add_expense",
       "get_expense_summary",
+      "add_income",
+      "get_financial_overview",
+      "set_budget",
+      "list_budgets",
+      "check_budget_alerts",
       "add_calendar_event",
       "list_calendar_events",
       "track_habit",
@@ -58,7 +66,9 @@
       "approve_fact",
       "list_whatsapp_media",
       "list_recent_emails",
-      "read_email"
+      "read_email",
+      "get_email_digest",
+      "text_to_speech"
     ]
   },
   "scheduler": {
@@ -75,6 +85,24 @@
         "cron": "0 20 * * *",
         "skill": "daily_briefing",
         "message": "Generate the evening summary."
+      },
+      {
+        "name": "recurring_tasks",
+        "cron": "0 7 * * *",
+        "skill": "task_management",
+        "message": "Generate any due recurring tasks for today."
+      },
+      {
+        "name": "email_digest",
+        "cron": "0 9,17 * * *",
+        "skill": "media_access",
+        "message": "Check for new emails and provide a brief digest."
+      },
+      {
+        "name": "budget_check",
+        "cron": "0 12 * * *",
+        "skill": "expense_tracking",
+        "message": "Check budget alerts and notify if any category is near or over the monthly limit."
       }
     ]
   },

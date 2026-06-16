@@ -1,13 +1,15 @@
-import { addExpense, getExpenseSummary } from './storage';
+import { addExpense, getExpenseSummary, addIncome, getFinancialOverview } from './storage';
 
 /**
- * Expense Tracking Tools — Local SQLite
+ * Expense & Financial Tools — Local SQLite
  *
  * Ported from the AWS WhatsApp Bot. Previously wrote to both Google Sheets
  * and local SQLite. Now uses local SQLite exclusively.
  *
- * Schema: expenses(id INTEGER PK, amount REAL, category TEXT,
- *                  description TEXT, date TEXT, timestamp DATETIME)
+ * Includes:
+ *   - Expense logging and summaries
+ *   - Income logging (salary, freelance, refunds, etc.)
+ *   - Combined financial overview (income vs expenses, net cashflow)
  */
 
 export const expenseTools = {
@@ -51,6 +53,54 @@ export const expenseTools = {
                 return getExpenseSummary(args.period || 'week');
             } catch (err: any) {
                 console.error("[Expenses] Error getting summary:", err.message);
+                return { status: "error", error: err.message };
+            }
+        }
+    },
+
+    add_income: {
+        name: "add_income",
+        description: "Log income received (salary, freelance payment, refund, gift, etc.).",
+        parameters: {
+            type: "object",
+            properties: {
+                amount: { type: "number", description: "Amount received in NIS" },
+                source: { type: "string", description: "Source of income (salary, freelance, refund, gift, scholarship, etc.)" },
+                description: { type: "string", description: "Short description of the income" }
+            },
+            required: ["amount", "source", "description"]
+        },
+        execute: async (args: any) => {
+            try {
+                if (args.amount <= 0) {
+                    return { status: "error", error: "Income amount must be positive." };
+                }
+                const result = addIncome(args.amount, args.source, args.description);
+                return {
+                    status: "success",
+                    message: `Income logged: ${result.amount} NIS from ${result.source}`
+                };
+            } catch (err: any) {
+                console.error("[Income] Error adding income:", err.message);
+                return { status: "error", error: err.message };
+            }
+        }
+    },
+
+    get_financial_overview: {
+        name: "get_financial_overview",
+        description: "Get a combined financial overview showing income vs expenses and net cashflow. Supports 'week', 'month', or 'year' periods.",
+        parameters: {
+            type: "object",
+            properties: {
+                period: { type: "string", description: "'week', 'month', or 'year'", enum: ["week", "month", "year"] }
+            }
+        },
+        execute: async (args: any) => {
+            try {
+                return getFinancialOverview(args.period || 'month');
+            } catch (err: any) {
+                console.error("[Financial] Error getting overview:", err.message);
                 return { status: "error", error: err.message };
             }
         }

@@ -6,8 +6,9 @@ This guide walks you through everything needed to get Astra running on the Mac M
 
 ### 1.1 Physical Setup
 - Connect the Mac Mini to power and ethernet (or WiFi)
-- Plug in an **HDMI Dummy Plug** so the system boots with GPU acceleration enabled even without a monitor
 - Complete macOS initial setup (create user account, enable remote login)
+
+> **Note**: An HDMI Dummy Plug is **not required** for headless SSH use on Apple Silicon Mac Minis. Only use one if you specifically need GPU-accelerated graphics rendering over VNC.
 
 ### 1.2 Enable Remote Access
 ```bash
@@ -15,8 +16,11 @@ This guide walks you through everything needed to get Astra running on the Mac M
 sudo systemsetup -setremotelogin on
 
 # Enable Screen Sharing (VNC)
-sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
-sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
+# On macOS Ventura+, use the System Settings CLI or GUI:
+#   System Settings → General → Sharing → Screen Sharing → ON
+# Or via terminal:
+sudo launchctl enable system/com.apple.screensharing
+sudo launchctl kickstart -k system/com.apple.screensharing
 ```
 
 From your iPad or other Mac, connect via:
@@ -41,6 +45,10 @@ sudo pmset -a autorestart 1
 ### 2.1 Homebrew
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# IMPORTANT: Add Homebrew to PATH (Apple Silicon installs to /opt/homebrew)
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
 ```
 
 ### 2.2 Node.js (LTS)
@@ -148,8 +156,9 @@ afplay test.wav
 
 ### 6.1 Clone the Project
 ```bash
+mkdir -p ~/MyProjects
 cd ~/MyProjects
-git clone https://github.com/Zvimarmor/Astra.git
+git clone https://github.com/Zvimarmor/Astra-local.git Astra
 cd Astra
 ```
 
@@ -175,12 +184,20 @@ nano .env
 cp ~/MyProjects/WhatsApp_Bot/service_account.json ~/MyProjects/Astra/data/service_account.json
 ```
 
-### 6.5 Start Astra
+### 6.5 Enable WhatsApp Channel
+
+The `openclaw.json` ships with WhatsApp **disabled** by default (only CLI is enabled). Before starting, edit `openclaw.json` and set `channels.whatsapp.enabled` to `true`:
+```bash
+# Quick toggle (or manually edit openclaw.json)
+sed -i '' 's/"enabled": false/"enabled": true/' openclaw.json
+```
+
+### 6.6 Start Astra
 ```bash
 openclaw start --config ./openclaw.json
 ```
 
-### 6.6 WhatsApp Authentication
+### 6.7 WhatsApp Authentication
 On first run, OpenClaw will display a QR code. Scan it with WhatsApp on your phone to link the device.
 
 ---
@@ -218,8 +235,10 @@ cat > ~/Library/LaunchAgents/com.astra.agent.plist << 'EOF'
 </plist>
 EOF
 
-# Load it
-launchctl load ~/Library/LaunchAgents/com.astra.agent.plist
+# Load it (use bootstrap on macOS Ventura+)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.astra.agent.plist
+# If the above fails, the legacy command is:
+# launchctl load ~/Library/LaunchAgents/com.astra.agent.plist
 ```
 
 > ⚠️ Replace `YOUR_USERNAME` with your actual macOS username.
@@ -297,8 +316,10 @@ cat > ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist << 'EOF'
 </plist>
 EOF
 
-# Load it
-launchctl load ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist
+# Load it (use bootstrap on macOS Ventura+)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist
+# If the above fails, the legacy command is:
+# launchctl load ~/Library/LaunchAgents/com.astra.whatsapp-listener.plist
 ```
 
 > ⚠️ Replace `YOUR_USERNAME` with your actual macOS username.
