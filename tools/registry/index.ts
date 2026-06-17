@@ -12,6 +12,7 @@ import { budgetTools } from '../budget';
 import { recurringTaskTools } from '../recurring-tasks';
 import { voiceTools } from '../voice';
 import { emailDigestTools } from '../email-digest';
+import { immichTools } from '../immich';
 
 /**
  * Tool Registry — OpenClaw Integration
@@ -80,6 +81,9 @@ export const toolRegistry: Record<string, Tool> = {
 
     // ─── Voice (Piper TTS) ────────────────────────────────────────────
     ...voiceTools,
+
+    // ─── Immich Photo Server ──────────────────────────────────────────
+    ...immichTools,
 };
 
 /**

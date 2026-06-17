@@ -456,9 +456,12 @@
             // ─── Services Card ───────────────────────────────
             const ollamaStatus = data.ollama?.connected ? 'ok' : 'error';
             const ollamaLabel = data.ollama?.connected ? 'Connected' : 'Offline';
-            const modelText = data.ollama?.models?.length
-                ? data.ollama.models.map(m => m.name).join(', ')
-                : 'No models';
+            let modelText = 'No models';
+            let hasLlava = false;
+            if (data.ollama?.models?.length) {
+                modelText = data.ollama.models.map(m => m.name).join(', ');
+                hasLlava = data.ollama.models.some(m => m.name.includes('llava'));
+            }
 
             html += `
             <div class="card">
@@ -473,7 +476,11 @@
                     </div>
                     <div class="service-row">
                         <span class="service-name">🤖 Models</span>
-                        <span style="font-size:12px;color:var(--text-secondary)">${modelText}</span>
+                        <span style="font-size:12px;color:var(--text-secondary);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${modelText}">${modelText}</span>
+                    </div>
+                    <div class="service-row">
+                        <span class="service-name">👁️ Vision (llava)</span>
+                        <span class="service-status ${hasLlava ? 'ok' : 'warn'}">${hasLlava ? 'Ready' : 'Missing'}</span>
                     </div>
                     <div class="service-row">
                         <span class="service-name"><span class="status-dot green"></span> Dashboard</span>

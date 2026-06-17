@@ -68,7 +68,12 @@
       "list_recent_emails",
       "read_email",
       "get_email_digest",
-      "text_to_speech"
+      "text_to_speech",
+      "immich_stats",
+      "immich_search_photos",
+      "immich_list_albums",
+      "immich_create_album",
+      "immich_add_to_album"
     ]
   },
   "scheduler": {
@@ -103,6 +108,12 @@
         "cron": "0 12 * * *",
         "skill": "expense_tracking",
         "message": "Check budget alerts and notify if any category is near or over the monthly limit."
+      },
+      {
+        "name": "photo_organizer",
+        "cron": "0 */6 * * *",
+        "skill": "photo_management",
+        "message": "Organize any new unprocessed photos."
       }
     ]
   },

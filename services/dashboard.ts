@@ -38,6 +38,16 @@ const HTML_PATH = path.join(__dirname, '..', 'services', 'dashboard.html');
 // Fallback: try from the services directory directly
 const HTML_PATH_ALT = path.join(__dirname, 'dashboard.html');
 
+let db: Database.Database | null = null;
+try {
+    if (fs.existsSync(DB_PATH)) {
+        db = new Database(DB_PATH, { readonly: true });
+        console.log(`[Dashboard] Connected to DB: ${DB_PATH}`);
+    }
+} catch (err: any) {
+    console.error(`[Dashboard] Failed to open DB: ${err.message}`);
+}
+
 // ─── Auth Middleware ─────────────────────────────────────────────────
 
 function authenticate(url: string): boolean {
@@ -93,11 +103,10 @@ async function getOllamaInfo() {
 
 function getDatabaseInfo() {
     try {
-        if (!fs.existsSync(DB_PATH)) {
-            return { connected: false, error: 'Database file not found' };
+        if (!db) {
+            return { connected: false, error: 'Database not connected' };
         }
 
-        const db = new Database(DB_PATH, { readonly: true });
         const today = new Date().toLocaleDateString('sv-SE', { timeZone: TIMEZONE });
 
         // Tasks
@@ -127,8 +136,6 @@ function getDatabaseInfo() {
         // Messages
         const totalMessages = (db.prepare("SELECT COUNT(*) as c FROM messages").get() as any)?.c || 0;
 
-        db.close();
-
         return {
             connected: true,
             tasks: { pending: pendingTasks, completed: completedTasks, highPriority: highPriTasks, recurring: recurringCount },
@@ -144,9 +151,8 @@ function getDatabaseInfo() {
 
 function getFinancialInfo() {
     try {
-        if (!fs.existsSync(DB_PATH)) return {};
+        if (!db) return {};
 
-        const db = new Database(DB_PATH, { readonly: true });
         const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
         const totalExpenses = (db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ?").get(monthStart) as any)?.total || 0;
@@ -155,8 +161,6 @@ function getFinancialInfo() {
         try {
             totalIncome = (db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM income WHERE date >= ?").get(monthStart) as any)?.total || 0;
         } catch { /* table may not exist */ }
-
-        db.close();
 
         return {
             totalIncome: Math.round(totalIncome),
@@ -169,21 +173,19 @@ function getFinancialInfo() {
 
 function getBudgetInfo() {
     try {
-        if (!fs.existsSync(DB_PATH)) return [];
+        if (!db) return [];
 
-        const db = new Database(DB_PATH, { readonly: true });
         const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
         let budgets: any[] = [];
         try {
             budgets = db.prepare('SELECT category, monthly_limit FROM budgets ORDER BY category').all() as any[];
         } catch {
-            db.close();
             return []; // table doesn't exist
         }
 
         const result = budgets.map((b: any) => {
-            const spent = (db.prepare(
+            const spent = (db!.prepare(
                 'SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE LOWER(category) = ? AND date >= ?'
             ).get(b.category, monthStart) as any)?.total || 0;
 
@@ -195,7 +197,6 @@ function getBudgetInfo() {
             return { category: b.category, spent: Math.round(spent), limit: Math.round(b.monthly_limit), percent, alert };
         });
 
-        db.close();
         return result;
     } catch {
         return [];
@@ -233,6 +234,12 @@ const server = http.createServer(async (req, res) => {
 
     // ─── Dashboard HTML ──────────────────────────────────
     if (url === '/' || url.startsWith('/?')) {
+        if (!authenticate(url)) {
+            res.writeHead(401, { 'Content-Type': 'text/plain' });
+            res.end('Unauthorized - Missing or invalid ?token= parameter');
+            return;
+        }
+
         let htmlFile = HTML_PATH;
         if (!fs.existsSync(htmlFile)) {
             htmlFile = HTML_PATH_ALT;
@@ -276,5 +283,16 @@ server.on('error', (err: NodeJS.ErrnoException) => {
     } else {
         console.error('[Dashboard] Server error:', err.message);
     }
+    if (db) db.close();
     process.exit(1);
 });
+
+// Graceful shutdown
+function shutdown() {
+    console.log('\n[Dashboard] Shutting down...');
+    if (db) db.close();
+    server.close(() => process.exit(0));
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

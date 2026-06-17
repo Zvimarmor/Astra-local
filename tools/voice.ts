@@ -1,10 +1,6 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { config } from './config';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Voice Tools — Piper TTS (Local Text-to-Speech)
@@ -96,22 +92,8 @@ export const voiceTools = {
                 const timestamp = Date.now();
                 const outputFile = path.join(config.ttsOutputDir, `tts_${timestamp}.wav`);
 
-                // Run Piper via execFile (safe — no shell interpolation)
-                await execFileAsync(config.piperBinaryPath, [
-                    '--model', config.piperVoiceModel,
-                    '--output_file', outputFile,
-                ], {
-                    timeout: 30000, // 30 second timeout
-                    maxBuffer: 1024 * 1024,
-                    // Pass text via stdin
-                    env: { ...process.env },
-                });
-
+                // Run Piper (safe — no shell interpolation)
                 // Piper reads from stdin — we need to pipe text
-                // Actually, execFile doesn't support stdin easily.
-                // Use a different approach: write text to a temp file and pipe it.
-                const tempFile = path.join(config.ttsOutputDir, `.tts_input_${timestamp}.txt`);
-                fs.writeFileSync(tempFile, text, 'utf-8');
 
                 await new Promise<void>((resolve, reject) => {
                     const proc = require('child_process').spawn(config.piperBinaryPath, [
@@ -134,9 +116,6 @@ export const voiceTools = {
                     });
                     proc.on('error', reject);
                 });
-
-                // Clean up temp file
-                try { fs.unlinkSync(tempFile); } catch { /* ignore */ }
 
                 // Verify output was created
                 if (!fs.existsSync(outputFile)) {

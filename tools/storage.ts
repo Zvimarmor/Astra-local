@@ -87,7 +87,23 @@ db.exec(`
         date TEXT NOT NULL,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
+    CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
+    CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
 `);
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n[Storage] Closing database connection...');
+    db.close();
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('\n[Storage] Closing database connection...');
+    db.close();
+    process.exit(0);
+});
 
 // ═══════════════════════════════════════════════════════════════════
 //  MESSAGES (Conversation Memory)

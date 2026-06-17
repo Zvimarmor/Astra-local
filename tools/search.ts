@@ -23,12 +23,13 @@ function translateCity(raw: string): string {
     return CITY_MAP[trimmed] || trimmed;
 }
 
-// SearXNG public instances (fallback chain)
 const SEARXNG_INSTANCES = [
     'https://search.sapti.me',
     'https://searx.be',
     'https://search.bus-hit.me',
     'https://paulgo.io',
+    'https://searx.tiekoetter.com',
+    'https://searxng.site',
 ];
 
 export const searchTools = {
