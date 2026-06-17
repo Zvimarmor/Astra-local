@@ -158,12 +158,6 @@ else
     ollama pull llama3 && ok "Pulled: llama3 (fallback)" || warn "Failed to pull llama3"
 fi
 
-if ollama list 2>/dev/null | grep -q "llava"; then
-    skip "Model: llava"
-else
-    ollama pull llava && ok "Pulled: llava (vision)" || warn "Failed to pull llava"
-fi
-
 # ═══════════════════════════════════════════════════════════════════
 #  Step 7: Piper (Local TTS)
 # ═══════════════════════════════════════════════════════════════════
@@ -259,15 +253,6 @@ else
     read -p "  Open .env in nano now? (Y/n): " EDIT_ENV
     if [[ "${EDIT_ENV:-y}" =~ ^[Yy] ]]; then
         nano "$PROJECT_DIR/.env"
-    fi
-fi
-
-if [[ -f "$PROJECT_DIR/.env.immich" ]]; then
-    skip ".env.immich file (already exists)"
-else
-    if [[ -f "$PROJECT_DIR/.env.immich.example" ]]; then
-        cp "$PROJECT_DIR/.env.immich.example" "$PROJECT_DIR/.env.immich"
-        ok "Created .env.immich from .env.immich.example"
     fi
 fi
 
@@ -488,11 +473,6 @@ if ollama list 2>/dev/null | grep -q "nous-hermes"; then
 else
     warn "Model 'nous-hermes' not found (pull with: ollama pull nous-hermes)"
 fi
-if ollama list 2>/dev/null | grep -q "llava"; then
-    ok "Model 'llava' is available"
-else
-    warn "Model 'llava' not found (pull with: ollama pull llava)"
-fi
 
 # Check Node
 if command -v node &>/dev/null; then
@@ -537,11 +517,6 @@ echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║                  Setup Complete! 🎉                 ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  ${CYAN}Storage Estimate:${NC}"
-echo -e "    Ollama Models (nous-hermes, llama3, llava): ~14GB"
-echo -e "    Docker, Node, Project Files: ~3-5GB"
-echo -e "    ${BOLD}Total Astra Footprint: ~17-19GB${NC} (out of 256GB, leaving ~237GB for macOS & Photos)"
 echo ""
 echo -e "  ${CYAN}Next steps:${NC}"
 echo -e "    1. Review .env:          ${YELLOW}nano $PROJECT_DIR/.env${NC}"
