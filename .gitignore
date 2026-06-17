@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-services/
 .env
+.env.immich
 data/service_account.json
 data/memory.db
 data/memory.db-shm

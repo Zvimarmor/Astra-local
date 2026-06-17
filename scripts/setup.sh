@@ -262,6 +262,15 @@ else
     fi
 fi
 
+if [[ -f "$PROJECT_DIR/.env.immich" ]]; then
+    skip ".env.immich file (already exists)"
+else
+    if [[ -f "$PROJECT_DIR/.env.immich.example" ]]; then
+        cp "$PROJECT_DIR/.env.immich.example" "$PROJECT_DIR/.env.immich"
+        ok "Created .env.immich from .env.immich.example"
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════
 #  Step 11: Service Account
 # ═══════════════════════════════════════════════════════════════════
