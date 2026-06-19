@@ -46,7 +46,7 @@ Astra/
 Before running Astra, you need:
 
 1. **Mac Mini M4** with macOS (16GB+ RAM recommended)
-2. **Ollama** installed with a model pulled (e.g., `llama3` or `nous-hermes`)
+2. **Ollama** installed with the Q8 model pulled: `hermes3:8b-llama3.1-q8_0`
 3. **OpenClaw** installed and onboarded
 4. **Google service account** JSON file (for Calendar API)
 

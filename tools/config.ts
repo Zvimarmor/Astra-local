@@ -9,7 +9,7 @@ export const config = {
     calendarId: (process.env.CALENDAR_ID || 'primary').trim(),
     serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(process.cwd(), 'data', 'service_account.json'),
     ollamaBaseUrl: (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').trim(),
-    ollamaModel: (process.env.OLLAMA_MODEL || 'nous-hermes').trim(),
+    ollamaModel: (process.env.OLLAMA_MODEL || 'hermes3:8b-llama3.1-q8_0').trim(),
     timezone: process.env.TIMEZONE || 'Asia/Jerusalem',
     whitelistJids: (process.env.WHITELIST_JIDS || '').split(',').map(j => j.trim()).filter(Boolean),
     dbPath: process.env.DB_PATH || path.join(process.cwd(), 'data', 'memory.db'),

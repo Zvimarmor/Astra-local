@@ -8,8 +8,8 @@
   "model": {
     "provider": "ollama",
     "base_url": "http://localhost:11434",
-    "model": "nous-hermes",
-    "fallback_model": "llama3",
+    "model": "hermes3:8b-llama3.1-q8_0",
+    "fallback_model": "hermes3",
     "temperature": 0.7,
     "max_tokens": 2048
   },

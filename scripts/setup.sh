@@ -146,16 +146,16 @@ fi
 
 # Pull models
 info "Pulling LLM models (this may take a while)..."
-if ollama list 2>/dev/null | grep -q "nous-hermes"; then
-    skip "Model: nous-hermes"
+if ollama list 2>/dev/null | grep -q "hermes3:8b-llama3.1-q8_0"; then
+    skip "Model: hermes3:8b-llama3.1-q8_0"
 else
-    ollama pull nous-hermes && ok "Pulled: nous-hermes" || warn "Failed to pull nous-hermes"
+    ollama pull hermes3:8b-llama3.1-q8_0 && ok "Pulled: hermes3:8b-llama3.1-q8_0" || warn "Failed to pull hermes3:8b-llama3.1-q8_0"
 fi
 
-if ollama list 2>/dev/null | grep -q "llama3"; then
-    skip "Model: llama3"
+if ollama list 2>/dev/null | grep -q "hermes3"; then
+    skip "Model: hermes3 (fallback)"
 else
-    ollama pull llama3 && ok "Pulled: llama3 (fallback)" || warn "Failed to pull llama3"
+    ollama pull hermes3 && ok "Pulled: hermes3 (fallback)" || warn "Failed to pull hermes3"
 fi
 
 # ═══════════════════════════════════════════════════════════════════
@@ -468,10 +468,10 @@ else
 fi
 
 # Check models
-if ollama list 2>/dev/null | grep -q "nous-hermes"; then
-    ok "Model 'nous-hermes' is available"
+if ollama list 2>/dev/null | grep -q "hermes3:8b-llama3.1-q8_0"; then
+    ok "Model 'hermes3:8b-llama3.1-q8_0' is available"
 else
-    warn "Model 'nous-hermes' not found (pull with: ollama pull nous-hermes)"
+    warn "Model 'hermes3:8b-llama3.1-q8_0' not found (pull with: ollama pull hermes3:8b-llama3.1-q8_0)"
 fi
 
 # Check Node

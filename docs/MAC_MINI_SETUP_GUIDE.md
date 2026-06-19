@@ -83,15 +83,22 @@ brew services start ollama
 
 ### 3.3 Pull Models
 ```bash
-# Primary model — good at tool calling and instruction following
-ollama pull nous-hermes
+# Primary model — Hermes 3 8B at Q8 quantization
+# Best reasoning & tool-calling accuracy for 16GB Mac Mini M4
+ollama pull hermes3:8b-llama3.1-q8_0
 
-# Fallback / alternative
-ollama pull llama3
+# Fallback (default Q4 quantization, smaller footprint)
+ollama pull hermes3
 
 # Verify
 ollama list
 ```
+
+> **Why Q8?** On the Mac Mini M4 (16GB), this machine also runs Immich with
+> its own ML pipeline. The 8-bit quantization (`q8_0`) at 8.5GB provides
+> significantly better reasoning and tool-calling accuracy than the default
+> 4-bit (`q4_0`) at 4.7GB, while fitting within the memory budget alongside
+> Immich. Ollama auto-unloads models when idle, so peak RAM is manageable.
 
 ### 3.4 Verify Endpoint
 ```bash
@@ -116,7 +123,7 @@ openclaw onboard
 During onboarding:
 - **Model provider**: Select `Ollama`
 - **Endpoint**: `http://localhost:11434`
-- **Model**: `nous-hermes`
+- **Model**: `hermes3:8b-llama3.1-q8_0`
 - **Channels**: Enable WhatsApp
 
 ### 4.3 Configure
@@ -250,7 +257,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.astra.agent.plist
 | Check | Command | Expected |
 |---|---|---|
 | Ollama running | `curl localhost:11434/api/tags` | JSON with model list |
-| Model loaded | `ollama run nous-hermes "Hello"` | Text response |
+| Model loaded | `ollama run hermes3:8b-llama3.1-q8_0 "Hello"` | Text response |
 | OpenClaw running | `openclaw status` | Shows active gateway |
 | WhatsApp connected | Send "ping" to self on WhatsApp | Astra responds |
 | Calendar works | Ask "What's on my calendar?" | Lists events |
