@@ -266,7 +266,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.astra.agent.plist
 
 ---
 
-## 9. External Storage Setup (SanDisk Extreme 1TB)
+## 9. External Storage Setup (Extreme SSD)
 
 For heavy media and photos (Immich, etc.):
 ```bash
@@ -274,7 +274,7 @@ For heavy media and photos (Immich, etc.):
 ls /Volumes/
 
 # Create a symlink for easy access
-ln -s /Volumes/SanDisk_Extreme ~/ExternalSSD
+ln -s "/Volumes/Extreme SSD" ~/ExternalSSD
 ```
 
 ---

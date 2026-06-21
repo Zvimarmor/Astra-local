@@ -98,7 +98,7 @@ services:
     container_name: immich-server
     restart: unless-stopped
     volumes:
-      - /Volumes/SanDisk_Extreme/immich/library:/usr/src/app/upload
+      - /Volumes/Extreme SSD/immich/library:/usr/src/app/upload
       - /etc/localtime:/etc/localtime:ro
     env_file: .env.immich
     depends_on:
