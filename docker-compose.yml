@@ -11,28 +11,6 @@
 # ─────────────────────────────────────────────────────────
 
 services:
-  # ─── Ollama (Local LLM) ─────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: astra-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      # Persist downloaded models across container restarts
-      - ollama_models:/root/.ollama
-    # Apple Silicon GPU passthrough (Docker Desktop for Mac)
-    deploy:
-      resources:
-        reservations:
-          memory: 8G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
-
   # ─── Astra Agent ────────────────────────────────────────
   astra:
     build:
@@ -40,14 +18,11 @@ services:
       dockerfile: Dockerfile
     container_name: astra-agent
     restart: unless-stopped
-    depends_on:
-      ollama:
-        condition: service_healthy
     env_file:
       - .env
     environment:
-      # Override Ollama URL to point to the sibling container
-      - OLLAMA_BASE_URL=http://ollama:11434
+      # Connect to the native Mac host Ollama for GPU acceleration
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - DB_PATH=/app/data/memory.db
       - SERVICE_ACCOUNT_PATH=/app/data/service_account.json
       - NODE_ENV=production
@@ -83,7 +58,7 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/memory.db
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     volumes:
       - ./data:/app/data
       - ./services/dashboard.html:/app/services/dashboard.html:ro
@@ -130,8 +105,6 @@ services:
 
 
 volumes:
-  ollama_models:
-    name: astra-ollama-models
   immich_ml_cache:
     name: astra-immich-ml-cache
   immich_pgdata:
