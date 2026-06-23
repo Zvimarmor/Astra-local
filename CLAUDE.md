@@ -67,6 +67,7 @@ These are **standalone long-running processes, independent of OpenClaw and the a
 - `whatsapp-listener.ts` — read-only Baileys listener. Deliberately has **no exports** and **never calls `sendMessage`**, so the LLM has no code path to send WhatsApp messages; it only downloads incoming media into `data/media/whatsapp/` and records metadata in the shared DB. Preserve this isolation — do not export from it or add send capability.
 - `dashboard.ts` (+ `dashboard.html`) — local status dashboard.
 - `immich-organizer.ts` — Immich photo organization.
+- `scheduler.ts` — **proactive scheduler** (launchd `com.astra.scheduler`). Deterministic: on a 60s tick it reads the `schedules` table, and for each due job builds a message **straight from SQLite** and pushes it to Telegram via the Bot API. **No LLM in the loop** — it can't hallucinate "I sent it" and runs even when Ollama is cold. Jobs: `recurring_gen` (07:00, generates tasks from templates), `morning_briefing` (08:00), `budget_check` (12:00, silent unless alerts), `email_digest` (17:00, silent if nothing), `evening_review` (20:00). Idempotency = `schedule_runs UNIQUE(schedule_id, run_date)` (one send per day; "fire late, once" on catch-up). Quiet hours: night 22:00–07:00 + Shabbat (Fri 18:00→Sat 20:00). It `require()`s the compiled `dist/` tool modules (`storage.js`, `email-digest.js`) at runtime, so **`npm run build` must run before `build:services`** for it to work. The Telegram bot token lives in `.env` as `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_OWNER_CHAT_ID`).
 
 ## Hard-won gotchas
 

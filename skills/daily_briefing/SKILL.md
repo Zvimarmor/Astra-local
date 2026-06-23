@@ -1,8 +1,12 @@
 # Daily Briefing Skill
 
+> NOTE: The **proactive** 08:00 morning and 20:00 evening briefings are sent automatically by
+> the background scheduler service (`dist-services/scheduler.js`), built deterministically from
+> SQLite — NOT by you. This skill is for **on-demand** briefings when the user asks for one in
+> chat. The format below mirrors what the scheduler sends, so on-demand answers feel consistent.
+
 ## When to Activate
-- **Automatically** via scheduler at 08:00 (morning) and 20:00 (evening)
-- User asks: "daily summary", "briefing", "what do I have today?"
+- User asks: "daily summary", "briefing", "what do I have today?", "what's on for today?"
 
 ## Tools Available
 - `assistant_utils(action="daily_status")` — Get pending tasks and uncompleted habits.

@@ -88,10 +88,56 @@ db.exec(`
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job TEXT NOT NULL,
+        hour INTEGER NOT NULL,
+        minute INTEGER NOT NULL DEFAULT 0,
+        days TEXT NOT NULL DEFAULT 'daily',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        catch_up INTEGER NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS schedule_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER NOT NULL,
+        run_date TEXT NOT NULL,
+        ran_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL,
+        detail TEXT,
+        UNIQUE(schedule_id, run_date)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
     CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
 `);
+
+// Seed the default schedule set on first run (only if empty).
+// Times are local (Asia/Jerusalem). See services/scheduler.ts for the jobs.
+{
+    const count = (db.prepare('SELECT COUNT(*) as c FROM schedules').get() as { c: number }).c;
+    if (count === 0) {
+        const seed = db.prepare(
+            'INSERT INTO schedules (job, hour, minute, days, enabled, catch_up) VALUES (?, ?, ?, ?, 1, ?)'
+        );
+        // job, hour, minute, days, catch_up. catch_up=1 everywhere → "fire late, once"
+        // if the Mac was asleep/off at the scheduled time (user's chosen policy).
+        const defaults: [string, number, number, string, number][] = [
+            ['recurring_gen', 7, 0, 'daily', 1],     // generate tasks from templates (silent unless created)
+            ['morning_briefing', 8, 0, 'daily', 1],  // full briefing
+            ['budget_check', 12, 0, 'daily', 1],     // silent unless warnings/overages
+            ['email_digest', 17, 0, 'daily', 1],     // unread summary (silent if nothing)
+            ['evening_review', 20, 0, 'daily', 1],   // evening summary
+        ];
+        const tx = db.transaction(() => {
+            for (const [job, h, m, days, cu] of defaults) seed.run(job, h, m, days, cu);
+        });
+        tx();
+        console.log('[Storage] Seeded default schedules (5 jobs).');
+    }
+}
 
 // Graceful shutdown
 process.on('SIGINT', () => {
@@ -568,4 +614,70 @@ export function getFinancialOverview(period: string = 'month'): {
         expense_categories: expenseRows,
         summary: `Financial Overview (${period}): Income ${totalIncome} NIS, Expenses ${totalExpenses} NIS, Net ${netSign}${net} NIS`,
     };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SCHEDULES (Proactive Scheduler — consumed by services/scheduler.ts)
+// ═══════════════════════════════════════════════════════════════════
+
+export interface Schedule {
+    id: number;
+    job: string;
+    hour: number;
+    minute: number;
+    days: string;       // 'daily' or CSV of 0-6 (0=Sunday)
+    enabled: number;
+    catch_up: number;
+}
+
+export function getEnabledSchedules(): Schedule[] {
+    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up FROM schedules WHERE enabled = 1').all() as Schedule[];
+}
+
+export function getSchedules(): Schedule[] {
+    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up FROM schedules ORDER BY hour, minute').all() as Schedule[];
+}
+
+/** True if this schedule already has a run row for the given local date. */
+export function hasRunOnDate(scheduleId: number, runDate: string): boolean {
+    const row = db.prepare('SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND run_date = ? LIMIT 1').get(scheduleId, runDate);
+    return !!row;
+}
+
+/**
+ * Record a run for (schedule, date). Returns true if THIS call claimed the slot
+ * (i.e. no prior row existed). The UNIQUE(schedule_id, run_date) constraint makes
+ * this the idempotency guard — only the first writer per day proceeds to send.
+ */
+export function claimScheduleRun(scheduleId: number, runDate: string, status: string, detail?: string): boolean {
+    try {
+        const info = db.prepare(
+            'INSERT INTO schedule_runs (schedule_id, run_date, status, detail) VALUES (?, ?, ?, ?)'
+        ).run(scheduleId, runDate, status, detail ?? null);
+        return info.changes > 0;
+    } catch (err: any) {
+        // UNIQUE violation → another tick already claimed this day.
+        if (String(err.message).includes('UNIQUE')) return false;
+        throw err;
+    }
+}
+
+/** Update the status/detail of an already-claimed run for the day. */
+export function updateScheduleRun(scheduleId: number, runDate: string, status: string, detail?: string): void {
+    db.prepare('UPDATE schedule_runs SET status = ?, detail = ?, ran_at = CURRENT_TIMESTAMP WHERE schedule_id = ? AND run_date = ?')
+        .run(status, detail ?? null, scheduleId, runDate);
+}
+
+/** Enable/disable a schedule by id. Returns true if a row changed. */
+export function setScheduleEnabled(id: number, enabled: boolean): boolean {
+    const info = db.prepare('UPDATE schedules SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
+    return info.changes > 0;
+}
+
+/** Update a schedule's time (and optionally days) by id. Returns true if changed. */
+export function updateScheduleTime(id: number, hour: number, minute: number, days?: string): boolean {
+    const info = days !== undefined
+        ? db.prepare('UPDATE schedules SET hour = ?, minute = ?, days = ? WHERE id = ?').run(hour, minute, days, id)
+        : db.prepare('UPDATE schedules SET hour = ?, minute = ? WHERE id = ?').run(hour, minute, id);
+    return info.changes > 0;
 }

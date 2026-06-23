@@ -75,6 +75,28 @@ export const config = {
         // The spotifyd device_name on this Mac (see ~/.config/spotifyd/spotifyd.conf)
         deviceName: process.env.SPOTIFY_DEVICE_NAME || 'Astra_Mac_Mini',
     },
+
+    // Telegram (proactive scheduler → Bot API sendMessage to the owner)
+    // Token currently also lives in ~/.openclaw/openclaw.json; keep a copy in .env
+    // so the standalone scheduler service can push without going through OpenClaw.
+    telegram: {
+        botToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+        ownerChatId: (process.env.TELEGRAM_OWNER_CHAT_ID || '').trim(),
+    },
+
+    // Proactive scheduler (services/scheduler.ts → dist-services/scheduler.js)
+    // Deterministic, no LLM: reads SQLite and pushes formatted messages on a timer.
+    scheduler: {
+        tickSeconds: parseInt(process.env.SCHEDULER_TICK_SECONDS || '60', 10),
+        // Nightly quiet window (no proactive messages). Local hours, Asia/Jerusalem.
+        quietNightStart: parseInt(process.env.SCHEDULER_QUIET_NIGHT_START || '22', 10),
+        quietNightEnd: parseInt(process.env.SCHEDULER_QUIET_NIGHT_END || '7', 10),
+        // Shabbat quiet window (approximate, no sunset math). Friday >= start hour
+        // through Saturday < end hour. Errs toward MORE quiet, which is safe.
+        quietShabbat: (process.env.SCHEDULER_QUIET_SHABBAT || 'true').toLowerCase() !== 'false',
+        shabbatStartHourFri: parseInt(process.env.SCHEDULER_SHABBAT_START_FRI || '18', 10),
+        shabbatEndHourSat: parseInt(process.env.SCHEDULER_SHABBAT_END_SAT || '20', 10),
+    },
 };
 
 // Boot-time validation
