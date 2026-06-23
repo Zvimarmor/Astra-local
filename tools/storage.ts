@@ -139,6 +139,29 @@ db.exec(`
     }
 }
 
+// Ensure the analytical jobs exist (added after the original 5-job seed, so this
+// must run as an idempotent "insert if missing" rather than the empty-table seed
+// above — existing DBs already have rows). LLM-phrased, deterministic fallback.
+{
+    const ensure = db.prepare(
+        `INSERT INTO schedules (job, hour, minute, days, enabled, catch_up)
+         SELECT ?, ?, ?, ?, 1, 1
+         WHERE NOT EXISTS (SELECT 1 FROM schedules WHERE job = ?)`
+    );
+    // weekly_recap: Saturday 20:30 (after Shabbat quiet ends at 20:00), days '6' = Sat.
+    // monthly_finance_review: scheduled daily 21:00; the builder self-gates to the LAST
+    //   day of the month so the month-to-date overview covers the full ending month
+    //   (no day_of_month column needed).
+    const extras: [string, number, number, string][] = [
+        ['weekly_recap', 20, 30, '6'],
+        ['monthly_finance_review', 21, 0, 'daily'],
+    ];
+    const tx = db.transaction(() => {
+        for (const [job, h, m, days] of extras) ensure.run(job, h, m, days, job);
+    });
+    tx();
+}
+
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\n[Storage] Closing database connection...');
