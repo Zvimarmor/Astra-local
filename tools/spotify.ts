@@ -88,26 +88,49 @@ function nowPlayingSummary(data: any): string {
     return `${state}: "${t.name}"${artists ? ` — ${artists}` : ''}`;
 }
 
+/** Human-friendly label for a search result, by Spotify object type. */
+function describeItem(searchType: string, item: any): string {
+    const artists = (item.artists || []).map((a: any) => a.name).join(', ');
+    switch (searchType) {
+        case 'track': return `"${item.name}"${artists ? ` — ${artists}` : ''}`;
+        case 'album': return `album "${item.name}"${artists ? ` — ${artists}` : ''}`;
+        case 'playlist': return `playlist "${item.name}"${item.owner?.display_name ? ` by ${item.owner.display_name}` : ''}`;
+        case 'artist': return `artist "${item.name}"`;
+        case 'show': return `podcast "${item.name}"${item.publisher ? ` — ${item.publisher}` : ''}`;
+        default: return `"${item.name}"`;
+    }
+}
+
 export const spotifyTools = {
     spotify_play: {
         name: 'spotify_play',
-        description: "Start or resume Spotify playback on the Mac. Optionally search for and play a track/artist.",
+        description: "Start or resume Spotify playback on the Mac. Optionally search for and play a track, album, playlist, artist, or podcast.",
         parameters: {
             type: 'object',
             properties: {
-                query: { type: 'string', description: "Optional: what to play, e.g. 'Bohemian Rhapsody' or 'lofi beats'. Omit to resume the current track." },
+                query: { type: 'string', description: "Optional: what to play, e.g. 'Bohemian Rhapsody', 'Dark Side of the Moon', 'The Daily podcast'. Omit to resume the current track." },
+                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "What kind of thing 'query' is. Default 'track'. Use 'album', 'playlist', 'artist', or 'podcast' when the user asks for one." },
             },
         },
         execute: async (args: any = {}) => {
             try {
                 const { id, warning } = await resolveDeviceId();
                 if (args.query) {
-                    const search = await api(`/search?q=${encodeURIComponent(args.query)}&type=track&limit=1`);
-                    const track = search?.tracks?.items?.[0];
-                    if (!track) return { status: 'error', error: `No track found for "${args.query}".` };
-                    await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT', body: { uris: [track.uri] } });
-                    const artists = (track.artists || []).map((a: any) => a.name).join(', ');
-                    return { status: 'success', message: `▶️ Playing "${track.name}"${artists ? ` — ${artists}` : ''}`, warning };
+                    const kind = String(args.type || 'track').toLowerCase();
+                    const searchType = kind === 'podcast' ? 'show' : kind;
+                    const buckets: Record<string, string> = {
+                        track: 'tracks', album: 'albums', playlist: 'playlists', artist: 'artists', show: 'shows',
+                    };
+                    const bucket = buckets[searchType];
+                    if (!bucket) return { status: 'error', error: `Unknown play type "${kind}". Use track, album, playlist, artist, or podcast.` };
+                    const search = await api(`/search?q=${encodeURIComponent(args.query)}&type=${searchType}&limit=5`);
+                    const item = (search?.[bucket]?.items || []).find((x: any) => x && x.uri);
+                    if (!item) return { status: 'error', error: `No ${kind} found for "${args.query}".` };
+                    // A track plays as a one-item uri list; album/playlist/artist/show play
+                    // as a *context* (context_uri) so the whole thing queues up.
+                    const body = searchType === 'track' ? { uris: [item.uri] } : { context_uri: item.uri };
+                    await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT', body });
+                    return { status: 'success', message: `▶️ Playing ${describeItem(searchType, item)}`, warning };
                 }
                 await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT' });
                 return { status: 'success', message: '▶️ Resumed playback.', warning };

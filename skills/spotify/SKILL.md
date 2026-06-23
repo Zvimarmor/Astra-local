@@ -10,7 +10,7 @@
 
 All music control goes through ONE tool: **`manage_music`**. Always pass an `action`. Playback happens on the Mac Mini's Spotify Connect device ("Astra_Mac_Mini") via spotifyd.
 
-- `manage_music(action="play", query?)` — Resume playback, or play something specific (e.g. query="lofi beats" or "Bohemian Rhapsody").
+- `manage_music(action="play", query?, type?)` — Resume playback, or play something specific. `type` is one of `track` (default), `album`, `playlist`, `artist`, `podcast` — set it to match what the user asked for (a single song is `track`; an album/playlist/artist/podcast needs the matching `type`, otherwise only a single song plays).
 - `manage_music(action="pause")` — Pause.
 - `manage_music(action="next")` — Skip to next track.
 - `manage_music(action="previous")` — Previous track.
@@ -27,6 +27,10 @@ All music control goes through ONE tool: **`manage_music`**. Always pass an `act
 ## Examples
 - "Play some jazz" → `manage_music(action="play", query="jazz")`
 - "Play Bohemian Rhapsody" → `manage_music(action="play", query="Bohemian Rhapsody Queen")`
+- "Play the album Dark Side of the Moon" → `manage_music(action="play", query="Dark Side of the Moon", type="album")`
+- "Play my Discover Weekly playlist" → `manage_music(action="play", query="Discover Weekly", type="playlist")`
+- "Put on some Radiohead" → `manage_music(action="play", query="Radiohead", type="artist")`
+- "Play the Daily podcast" → `manage_music(action="play", query="The Daily", type="podcast")`
 - "Pause" → `manage_music(action="pause")`
 - "Skip this song" → `manage_music(action="next")`
 - "Set volume to 40" → `manage_music(action="volume", volume_percent=40)`

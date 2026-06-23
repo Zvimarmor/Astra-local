@@ -299,20 +299,21 @@ export const megaTools = {
     manage_music: {
         name: 'manage_music',
         description:
-            "Control Spotify playback on the Mac. Choose action: 'play' (resume, or play something specific via optional query), " +
+            "Control Spotify playback on the Mac. Choose action: 'play' (resume, or play something specific via optional query + type), " +
             "'pause', 'next', 'previous', 'volume' (needs volume_percent 0-100), or 'now_playing' (what's playing).",
         parameters: {
             type: 'object',
             properties: {
                 action: { type: 'string', enum: ['play', 'pause', 'next', 'previous', 'volume', 'now_playing'], description: 'Playback operation to perform' },
                 query: { type: 'string', description: "What to play, e.g. 'lofi beats' (for play; omit to resume)" },
+                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "For play: what kind of thing 'query' is. Default 'track'. Use 'album'/'playlist'/'artist'/'podcast' when the user asks for one." },
                 volume_percent: { type: 'number', description: 'Volume 0-100 (for volume)' },
             },
             required: ['action'],
         },
         execute: async (a: any = {}) => {
             switch (a.action) {
-                case 'play': return call(spotifyTools as DomainMap, 'spotify_play', { query: a.query });
+                case 'play': return call(spotifyTools as DomainMap, 'spotify_play', { query: a.query, type: a.type });
                 case 'pause': return call(spotifyTools as DomainMap, 'spotify_pause', {});
                 case 'next': return call(spotifyTools as DomainMap, 'spotify_next', {});
                 case 'previous': return call(spotifyTools as DomainMap, 'spotify_previous', {});
