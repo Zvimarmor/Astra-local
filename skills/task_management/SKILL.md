@@ -6,7 +6,6 @@
 - User says: "done", "completed", "finished", "mark as done", "complete"
 - User says: "delete task", "remove task", "cancel task"
 - User mentions recurring: "every day", "every week", "every Monday", "recurring task"
-- Scheduler triggers recurring_tasks heartbeat (7:00 AM daily)
 
 ## Tools Available
 
@@ -27,7 +26,9 @@ All task operations go through ONE tool: **`manage_tasks`**. Always pass an `act
 - `manage_tasks(action="remove_recurring", recurring_id)` — Deactivate a recurring template.
 
 ## Recurring Task Behavior
-- Recurring templates generate real tasks automatically via the 7 AM scheduler.
+- Recurring templates generate real tasks automatically. This is done by the **background
+  scheduler service** (`dist-services/scheduler.js`, the `recurring_gen` job at 07:00) — NOT
+  by you. You never need to "run" or "trigger" generation; just create/list/remove templates.
 - Each template generates at most one task per day (idempotent).
 - The generated task appears in `manage_tasks(action="list")` like any other pending task.
 - Removing a recurring template does NOT delete already-generated tasks.
@@ -46,7 +47,8 @@ All task operations go through ONE tool: **`manage_tasks`**. Always pass an `act
 5. When listing tasks, format them as a numbered list with priority indicators.
 6. If the user mentions multiple tasks in one message, add ALL of them (one `manage_tasks` call each).
 7. If a tool returns an error, report it honestly — never claim success on failure.
-8. When the scheduler triggers recurring_tasks, silently generate tasks — only notify if tasks were actually created.
+8. Recurring-task generation and proactive reminders are handled by the background scheduler
+   service (deterministic, no model involvement). Don't try to "send" scheduled reminders yourself.
 
 ## Examples
 - "Add task: buy groceries" → `manage_tasks(action="add", title="buy groceries")`

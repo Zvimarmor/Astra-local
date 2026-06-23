@@ -7,7 +7,6 @@
 - User mentions income: "received", "salary", "got paid", "refund"
 - User asks about finances: "financial overview", "how much did I earn?", "net cashflow"
 - User mentions budgets: "set budget", "budget limit", "am I over budget?"
-- Scheduler triggers budget_check heartbeat (noon daily)
 
 ## Tools Available
 
@@ -42,7 +41,9 @@ Common sources:
 3. All amounts are in NIS (₪) unless otherwise specified.
 4. When showing summaries, format as a table with category, total, and count.
 5. If a tool fails, report the error to the user.
-6. When the scheduler triggers budget_check, only notify the user if there are warnings or overages. Don't send "all clear" messages.
+6. The daily budget check (noon) and proactive alerts are sent by the background scheduler
+   service automatically — not by you. It only messages on warnings/overages. You handle
+   on-demand budget questions when the user asks.
 
 ## Budget Alert Format
 ```
