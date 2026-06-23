@@ -6,7 +6,7 @@
 - User asks about weather in any city
 
 ## Tools Available
-- `web_search(query)` — Search the web using SearXNG, DuckDuckGo, and Wikipedia.
+- `assistant_utils(action="web_search", query)` — Search the web using SearXNG, DuckDuckGo, and Wikipedia. Weather queries are auto-routed to a weather source.
 
 ## Rules
 1. Always translate Hebrew queries to English before searching (the search engines work better in English).
@@ -16,6 +16,6 @@
 5. Always cite the source of the information.
 
 ## Examples
-- "What's the weather in Tel Aviv?" → `web_search("weather Tel Aviv")`
-- "Who won the Champions League?" → `web_search("Champions League winner 2026")`
-- "What is quantum computing?" → `web_search("quantum computing explained")`
+- "What's the weather in Tel Aviv?" → `assistant_utils(action="web_search", query="weather Tel Aviv")`
+- "Who won the Champions League?" → `assistant_utils(action="web_search", query="Champions League winner 2026")`
+- "What is quantum computing?" → `assistant_utils(action="web_search", query="quantum computing explained")`

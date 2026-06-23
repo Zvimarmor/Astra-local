@@ -1,0 +1,325 @@
+import { config } from '../config';
+import { taskTools } from '../tasks';
+import { recurringTaskTools } from '../recurring-tasks';
+import { expenseTools } from '../expenses';
+import { budgetTools } from '../budget';
+import { calendarTools } from '../calendar';
+import { habitTools } from '../habits';
+import { searchTools } from '../search';
+import { dailyStatusTools } from '../daily-status';
+import { memoryTools } from '../memory';
+import { whatsappMediaTools } from '../whatsapp-media';
+import { emailTools } from '../email';
+import { emailDigestTools } from '../email-digest';
+import { voiceTools } from '../voice';
+import { immichTools } from '../immich';
+import { spotifyTools } from '../spotify';
+
+/**
+ * Mega-Tools — consolidated tool surface for the local 8B model.
+ *
+ * WHY: Hermes-3 8B (and small local models generally) degrade badly when the
+ * system prompt carries ~34 individual tool schemas — the prompt overflows the
+ * context window and the model loops on hallucinated calls. This module folds
+ * the 34 domain tools behind 8 "mega-tools", each dispatched by an explicit
+ * `action` enum with a small set of *flat, explicitly-named* parameters.
+ *
+ * Design rules (do not regress these):
+ *   - Always an `action` string enum as the discriminator. Required, first.
+ *   - All other params are flat and explicitly named — NEVER a nested `args`
+ *     object and NEVER `additionalProperties: true`. 8B models cannot reliably
+ *     produce either; they need the parameter names spelled out in the schema.
+ *   - Each mega-tool's `execute` validates `action` and maps the flat params
+ *     onto the original domain tool's `execute`, so all legacy behavior and
+ *     error handling is preserved unchanged.
+ */
+
+type DomainTool = { execute: (args: any) => Promise<Record<string, any>> };
+type DomainMap = Record<string, DomainTool>;
+
+/** Dispatch helper: run a domain tool by name with the given args. */
+async function call(map: DomainMap, name: string, args: Record<string, any>): Promise<Record<string, any>> {
+    const tool = map[name];
+    if (!tool) return { status: 'error', error: `Internal routing error: ${name} not found` };
+    return tool.execute(args);
+}
+
+/** Standard "unknown action" error with the list of valid actions. */
+function badAction(action: string, valid: string[]): Record<string, any> {
+    return { status: 'error', error: `Unknown action "${action}". Valid actions: ${valid.join(', ')}.` };
+}
+
+export const megaTools = {
+    // ─── 1. Tasks (one-off + recurring) ──────────────────────────────
+    manage_tasks: {
+        name: 'manage_tasks',
+        description:
+            "Manage the user's to-do list and recurring task templates. " +
+            "Choose action: 'add' (needs title, optional priority), 'list', " +
+            "'complete' (needs task_id), 'delete' (needs task_id), " +
+            "'add_recurring' (needs title + frequency; weekly needs day_of_week 0-6, monthly needs day_of_month 1-31), " +
+            "'list_recurring', 'remove_recurring' (needs recurring_id).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['add', 'list', 'complete', 'delete', 'add_recurring', 'list_recurring', 'remove_recurring'], description: 'Which task operation to perform' },
+                title: { type: 'string', description: 'Task description (for add / add_recurring)' },
+                priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Task priority (default medium)' },
+                task_id: { type: 'string', description: 'Task ID like T1, or part of the title (for complete / delete)' },
+                frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Recurrence (for add_recurring)' },
+                day_of_week: { type: 'number', description: 'Weekly recurrence day: 0=Sunday .. 6=Saturday' },
+                day_of_month: { type: 'number', description: 'Monthly recurrence day: 1-31' },
+                recurring_id: { type: 'number', description: 'Recurring template ID (for remove_recurring)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'add': return call(taskTools as DomainMap, 'add_task', { title: a.title, priority: a.priority });
+                case 'list': return call(taskTools as DomainMap, 'list_tasks', {});
+                case 'complete': return call(taskTools as DomainMap, 'complete_task', { taskId: a.task_id });
+                case 'delete': return call(taskTools as DomainMap, 'delete_task', { taskId: a.task_id });
+                case 'add_recurring': return call(recurringTaskTools as DomainMap, 'add_recurring_task', { title: a.title, priority: a.priority, frequency: a.frequency, day_of_week: a.day_of_week, day_of_month: a.day_of_month });
+                case 'list_recurring': return call(recurringTaskTools as DomainMap, 'list_recurring_tasks', {});
+                case 'remove_recurring': return call(recurringTaskTools as DomainMap, 'remove_recurring_task', { id: a.recurring_id });
+                default: return badAction(a.action, ['add', 'list', 'complete', 'delete', 'add_recurring', 'list_recurring', 'remove_recurring']);
+            }
+        },
+    },
+
+    // ─── 2. Finances (expenses + income + budgets) ───────────────────
+    manage_finances: {
+        name: 'manage_finances',
+        description:
+            "Track money: expenses, income, and monthly budgets (all in NIS). " +
+            "Choose action: 'add_expense' (amount, category, description), " +
+            "'expense_summary' (optional period week|month), 'add_income' (amount, source, description), " +
+            "'financial_overview' (optional period week|month|year), 'set_budget' (category, monthly_limit), " +
+            "'list_budgets', 'budget_alerts'.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['add_expense', 'expense_summary', 'add_income', 'financial_overview', 'set_budget', 'list_budgets', 'budget_alerts'], description: 'Which finance operation to perform' },
+                amount: { type: 'number', description: 'Amount in NIS (for add_expense / add_income)' },
+                category: { type: 'string', description: 'Expense category (for add_expense / set_budget)' },
+                description: { type: 'string', description: 'Short note (for add_expense / add_income)' },
+                source: { type: 'string', description: 'Income source e.g. salary, freelance (for add_income)' },
+                period: { type: 'string', enum: ['week', 'month', 'year'], description: 'Time window for summaries' },
+                monthly_limit: { type: 'number', description: 'Monthly budget limit in NIS (for set_budget)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'add_expense': return call(expenseTools as DomainMap, 'add_expense', { amount: a.amount, category: a.category, description: a.description });
+                case 'expense_summary': return call(expenseTools as DomainMap, 'get_expense_summary', { period: a.period });
+                case 'add_income': return call(expenseTools as DomainMap, 'add_income', { amount: a.amount, source: a.source, description: a.description });
+                case 'financial_overview': return call(expenseTools as DomainMap, 'get_financial_overview', { period: a.period });
+                case 'set_budget': return call(budgetTools as DomainMap, 'set_budget', { category: a.category, monthly_limit: a.monthly_limit });
+                case 'list_budgets': return call(budgetTools as DomainMap, 'list_budgets', {});
+                case 'budget_alerts': return call(budgetTools as DomainMap, 'check_budget_alerts', {});
+                default: return badAction(a.action, ['add_expense', 'expense_summary', 'add_income', 'financial_overview', 'set_budget', 'list_budgets', 'budget_alerts']);
+            }
+        },
+    },
+
+    // ─── 3. Calendar ─────────────────────────────────────────────────
+    manage_calendar: {
+        name: 'manage_calendar',
+        description:
+            "Read or add Google Calendar events. Choose action: 'list' (optional max_results) " +
+            "or 'add' (needs summary, start, end in ISO format e.g. 2026-06-23T14:00:00; optional location, description).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['list', 'add'], description: 'List upcoming events or add a new one' },
+                max_results: { type: 'number', description: 'How many events to list (default 10)' },
+                summary: { type: 'string', description: 'Event title (for add)' },
+                location: { type: 'string', description: 'Location or meeting link (for add)' },
+                description: { type: 'string', description: 'Event notes (for add)' },
+                start: { type: 'string', description: 'ISO start datetime e.g. 2026-06-23T14:00:00 (for add)' },
+                end: { type: 'string', description: 'ISO end datetime e.g. 2026-06-23T15:00:00 (for add)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'list': return call(calendarTools as DomainMap, 'list_calendar_events', { maxResults: a.max_results });
+                case 'add': return call(calendarTools as DomainMap, 'add_calendar_event', { summary: a.summary, location: a.location, description: a.description, startDateTime: a.start, endDateTime: a.end });
+                default: return badAction(a.action, ['list', 'add']);
+            }
+        },
+    },
+
+    // ─── 4. Habits ───────────────────────────────────────────────────
+    manage_habits: {
+        name: 'manage_habits',
+        description:
+            "Track personal habits. Choose action: 'track' (start tracking; needs name + frequency), " +
+            "'log' (mark a habit done today; needs name), or 'list' (show all habits).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['track', 'log', 'list'], description: 'Habit operation to perform' },
+                name: { type: 'string', description: 'Habit name (for track / log)' },
+                frequency: { type: 'string', description: "How often e.g. 'daily', 'weekly' (for track)" },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'track': return call(habitTools as DomainMap, 'track_habit', { name: a.name, frequency: a.frequency });
+                case 'log': return call(habitTools as DomainMap, 'log_habit', { name: a.name });
+                case 'list': return call(habitTools as DomainMap, 'list_habits', {});
+                default: return badAction(a.action, ['track', 'log', 'list']);
+            }
+        },
+    },
+
+    // ─── 5. Email (read-only IMAP) ───────────────────────────────────
+    manage_email: {
+        name: 'manage_email',
+        description:
+            "Read-only email access (cannot send). Choose action: 'list' (recent emails; optional count, account, folder), " +
+            "'read' (full email by uid; optional account), or 'digest' (unread counts + latest subjects across accounts). " +
+            "Account is 'personal' (default) or 'university'.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['list', 'read', 'digest'], description: 'Email operation to perform' },
+                count: { type: 'number', description: 'How many recent emails to list (default 10, max 30)' },
+                account: { type: 'string', enum: ['personal', 'university'], description: "Which inbox (default 'personal')" },
+                folder: { type: 'string', description: "Mailbox folder (default 'INBOX')" },
+                uid: { type: 'number', description: 'Email UID to read (from a prior list)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'list': return call(emailTools as DomainMap, 'list_recent_emails', { count: a.count, account: a.account, folder: a.folder });
+                case 'read': return call(emailTools as DomainMap, 'read_email', { uid: a.uid, account: a.account });
+                case 'digest': return call(emailDigestTools as DomainMap, 'get_email_digest', {});
+                default: return badAction(a.action, ['list', 'read', 'digest']);
+            }
+        },
+    },
+
+    // ─── 6. Photos (Immich) ──────────────────────────────────────────
+    manage_photos: {
+        name: 'manage_photos',
+        description:
+            "Query and organize the Immich photo library (never deletes). Choose action: 'stats', " +
+            "'search' (semantic search; needs query in English, optional limit), 'list_albums', " +
+            "'create_album' (needs album_name, optional album_description), " +
+            "'add_to_album' (needs album_id and asset_ids).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['stats', 'search', 'list_albums', 'create_album', 'add_to_album'], description: 'Photo operation to perform' },
+                query: { type: 'string', description: 'Semantic search query in English (for search)' },
+                limit: { type: 'number', description: 'Max search results (default 10, max 50)' },
+                album_name: { type: 'string', description: 'New album name (for create_album)' },
+                album_description: { type: 'string', description: 'New album description (for create_album)' },
+                album_id: { type: 'string', description: 'Target album ID (for add_to_album)' },
+                asset_ids: { type: 'array', items: { type: 'string' }, description: 'Photo asset IDs to add (for add_to_album)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'stats': return call(immichTools as DomainMap, 'immich_stats', {});
+                case 'search': return call(immichTools as DomainMap, 'immich_search_photos', { query: a.query, limit: a.limit });
+                case 'list_albums': return call(immichTools as DomainMap, 'immich_list_albums', {});
+                case 'create_album': return call(immichTools as DomainMap, 'immich_create_album', { name: a.album_name, description: a.album_description });
+                case 'add_to_album': return call(immichTools as DomainMap, 'immich_add_to_album', { albumId: a.album_id, assetIds: a.asset_ids });
+                default: return badAction(a.action, ['stats', 'search', 'list_albums', 'create_album', 'add_to_album']);
+            }
+        },
+    },
+
+    // ─── 7. Memory (approval-based facts) ────────────────────────────
+    manage_memory: {
+        name: 'manage_memory',
+        description:
+            "Remember personal facts with user approval. Choose action: 'propose' (suggest a new fact to remember; " +
+            "needs fact — this asks the user to confirm, it does NOT save yet), 'approve' (save the pending fact after the user says yes), " +
+            "or 'decline' (discard the pending fact after the user says no).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['propose', 'approve', 'decline'], description: 'Memory operation to perform' },
+                fact: { type: 'string', description: 'The fact/preference to remember (for propose)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'propose': return call(memoryTools as DomainMap, 'propose_new_fact', { proposed_fact: a.fact });
+                case 'approve': return call(memoryTools as DomainMap, 'approve_fact', { approved: true });
+                case 'decline': return call(memoryTools as DomainMap, 'approve_fact', { approved: false });
+                default: return badAction(a.action, ['propose', 'approve', 'decline']);
+            }
+        },
+    },
+
+    // ─── 8. Assistant utilities (time, web, status, voice, media) ────
+    assistant_utils: {
+        name: 'assistant_utils',
+        description:
+            "Misc assistant helpers. Choose action: 'current_time' (date/time in Israel), " +
+            "'web_search' (real-time info; needs query), 'daily_status' (pending tasks + habits summary), " +
+            "'text_to_speech' (needs text, max 500 chars), 'list_whatsapp_media' (recent received media; optional count, media_type).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
+                query: { type: 'string', description: 'Search query in English (for web_search)' },
+                text: { type: 'string', description: 'Text to speak, max 500 chars (for text_to_speech)' },
+                count: { type: 'number', description: 'How many media items (for list_whatsapp_media)' },
+                media_type: { type: 'string', enum: ['image', 'video', 'document'], description: 'Filter media (for list_whatsapp_media)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'current_time': {
+                    const t = new Date().toLocaleString('en-IL', { timeZone: config.timezone });
+                    return { current_time: t };
+                }
+                case 'web_search': return call(searchTools as DomainMap, 'web_search', { query: a.query });
+                case 'daily_status': return call(dailyStatusTools as DomainMap, 'get_daily_status', {});
+                case 'text_to_speech': return call(voiceTools as DomainMap, 'text_to_speech', { text: a.text });
+                case 'list_whatsapp_media': return call(whatsappMediaTools as DomainMap, 'list_whatsapp_media', { count: a.count, media_type: a.media_type });
+                default: return badAction(a.action, ['current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media']);
+            }
+        },
+    },
+
+    // ─── 9. Music (Spotify → spotifyd on the Mac) ────────────────────
+    manage_music: {
+        name: 'manage_music',
+        description:
+            "Control Spotify playback on the Mac. Choose action: 'play' (resume, or play something specific via optional query), " +
+            "'pause', 'next', 'previous', 'volume' (needs volume_percent 0-100), or 'now_playing' (what's playing).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['play', 'pause', 'next', 'previous', 'volume', 'now_playing'], description: 'Playback operation to perform' },
+                query: { type: 'string', description: "What to play, e.g. 'lofi beats' (for play; omit to resume)" },
+                volume_percent: { type: 'number', description: 'Volume 0-100 (for volume)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'play': return call(spotifyTools as DomainMap, 'spotify_play', { query: a.query });
+                case 'pause': return call(spotifyTools as DomainMap, 'spotify_pause', {});
+                case 'next': return call(spotifyTools as DomainMap, 'spotify_next', {});
+                case 'previous': return call(spotifyTools as DomainMap, 'spotify_previous', {});
+                case 'volume': return call(spotifyTools as DomainMap, 'spotify_volume', { volume_percent: a.volume_percent });
+                case 'now_playing': return call(spotifyTools as DomainMap, 'spotify_now_playing', {});
+                default: return badAction(a.action, ['play', 'pause', 'next', 'previous', 'volume', 'now_playing']);
+            }
+        },
+    },
+};

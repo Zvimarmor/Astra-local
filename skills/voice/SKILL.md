@@ -5,7 +5,7 @@
 - User asks: "read my tasks out loud", "voice summary"
 
 ## Tools Available
-- `text_to_speech(text)` — Convert text to speech using Piper TTS. Returns a file path to the generated .wav audio file.
+- `assistant_utils(action="text_to_speech", text)` — Convert text to speech using Piper TTS. Returns a file path to the generated .wav audio file.
 
 ## How It Works
 - Piper runs entirely locally — no internet, no API calls, no cloud.
@@ -15,7 +15,7 @@
 - Old audio files are automatically cleaned up (keeps last 50).
 
 ## Rules
-1. When the user asks you to "read" or "say" something, first generate the response text, then call `text_to_speech()` with that text.
+1. When the user asks you to "read" or "say" something, first generate the response text, then call `assistant_utils(action="text_to_speech", text="...")` with that text.
 2. Keep text concise and natural-sounding — avoid bullet points, symbols, or formatting in the TTS text.
 3. If the text is too long, summarize it to fit within 500 characters.
 4. If Piper is not installed, inform the user and provide the install command: `brew install piper`.
@@ -29,5 +29,5 @@ File: tts_1718565432.wav (12 KB)
 ```
 
 ## Examples
-- "Read my tasks" → First call `list_tasks()`, format the result as natural text, then call `text_to_speech("You have 3 pending tasks: ...")`.
-- "Say hello" → `text_to_speech("Hello! How can I help you today?")`
+- "Read my tasks" → First call `manage_tasks(action="list")`, format the result as natural text, then call `assistant_utils(action="text_to_speech", text="You have 3 pending tasks: ...")`.
+- "Say hello" → `assistant_utils(action="text_to_speech", text="Hello! How can I help you today?")`

@@ -7,15 +7,15 @@
 - Scheduler triggers email_digest heartbeat (9:00 AM and 5:00 PM)
 
 ## Tools Available
-- `list_whatsapp_media(count?, media_type?)` — List recently received WhatsApp media (images, videos, documents).
-- `list_recent_emails(count?, account?, folder?)` — List recent emails from a Gmail account.
-- `read_email(uid, account?)` — Read the full text content of a specific email by its UID.
-- `get_email_digest()` — Quick summary of unread emails across all accounts (envelope metadata only).
+- `assistant_utils(action="list_whatsapp_media", count?, media_type?)` — List recently received WhatsApp media (images, videos, documents).
+- `manage_email(action="list", count?, account?, folder?)` — List recent emails from a Gmail account.
+- `manage_email(action="read", uid, account?)` — Read the full text content of a specific email by its UID.
+- `manage_email(action="digest")` — Quick summary of unread emails across all accounts (envelope metadata only).
 
 ## WhatsApp Media
 
 ### Usage
-When the user asks about photos or media received on WhatsApp, call `list_whatsapp_media`.
+When the user asks about photos or media received on WhatsApp, call `assistant_utils(action="list_whatsapp_media")`.
 - Default: returns the 10 most recent media files.
 - Use `media_type` to filter: "image", "video", or "document".
 - Results include: sender phone number, media type, caption (if any), timestamp, and local file path.
@@ -28,12 +28,12 @@ When the user asks about photos or media received on WhatsApp, call `list_whatsa
 
 ### Usage
 When the user asks about email:
-1. For a quick overview, call `get_email_digest()` first — it's fast and lightweight.
-2. For detailed listing, call `list_recent_emails` to show subjects and senders.
-3. If the user wants to read a specific email, call `read_email` with the `uid` from the listing.
+1. For a quick overview, call `manage_email(action="digest")` first — it's fast and lightweight.
+2. For detailed listing, call `manage_email(action="list")` to show subjects and senders.
+3. If the user wants to read a specific email, call `manage_email(action="read", uid=...)` with the `uid` from the listing.
 
 ### Email Digest (Scheduler)
-The scheduler calls `get_email_digest` at 9 AM and 5 PM. When triggered:
+The scheduler calls `manage_email(action="digest")` at 9 AM and 5 PM. When triggered:
 - If there are unread emails, send a summary: "📧 You have 3 unread emails — 1 from university, 2 personal."
 - If there are no unread emails, do NOT send a message (stay silent).
 - The digest only reads envelope metadata — the agent stays OUTSIDE Gmail.
@@ -43,7 +43,7 @@ The user has two Gmail accounts:
 - `"personal"` — Default. The user's personal Gmail.
 - `"university"` — The user's university Gmail.
 
-If the user says "check my uni email" or "university inbox", use `account: "university"`.
+If the user says "check my uni email" or "university inbox", use `account="university"`.
 Otherwise, default to `"personal"`.
 
 ### Limitations

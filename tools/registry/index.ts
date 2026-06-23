@@ -1,27 +1,16 @@
-import { config } from '../config';
-import { taskTools } from '../tasks';
-import { expenseTools } from '../expenses';
-import { calendarTools } from '../calendar';
-import { habitTools } from '../habits';
-import { searchTools } from '../search';
-import { dailyStatusTools } from '../daily-status';
-import { memoryTools } from '../memory';
-import { whatsappMediaTools } from '../whatsapp-media';
-import { emailTools } from '../email';
-import { budgetTools } from '../budget';
-import { recurringTaskTools } from '../recurring-tasks';
-import { voiceTools } from '../voice';
-import { emailDigestTools } from '../email-digest';
-import { immichTools } from '../immich';
+import { megaTools } from './mega-tools';
 
 /**
  * Tool Registry — OpenClaw Integration
  *
- * This module collects all custom tools and exports them in a format
- * compatible with OpenClaw's tool registration system.
+ * Exposes the consolidated 8 "mega-tools" (see ./mega-tools.ts) to the MCP
+ * server. The 34 underlying domain tools (tasks.ts, expenses.ts, immich.ts, …)
+ * are still the implementation — the mega-tools route to them — but only the 8
+ * action-dispatched schemas are advertised to the model. This keeps the system
+ * prompt small enough for the local 8B model to parse and call reliably.
  *
- * In the AWS version, this used Gemini-specific SchemaType enums.
- * Now uses standard JSON Schema (OpenAI-compatible, which OpenClaw expects).
+ * To roll back to the flat 34-tool surface, restore the previous version of
+ * this file from git (it spread every `<domain>Tools` object directly).
  */
 
 export interface Tool {
@@ -32,63 +21,11 @@ export interface Tool {
 }
 
 export const toolRegistry: Record<string, Tool> = {
-    // ─── Time ────────────────────────────────────────────────────
-    get_current_time: {
-        name: "get_current_time",
-        description: "Returns the current date and time in Israel (Asia/Jerusalem timezone)",
-        parameters: { type: "object", properties: {} },
-        execute: async () => {
-            const timeInIsrael = new Date().toLocaleString('en-IL', { timeZone: config.timezone });
-            return { current_time: timeInIsrael };
-        }
-    },
-
-    // ─── Tasks ───────────────────────────────────────────────────
-    ...taskTools,
-
-    // ─── Recurring Tasks ─────────────────────────────────────────
-    ...recurringTaskTools,
-
-    // ─── Expenses & Financial ────────────────────────────────────
-    ...expenseTools,
-
-    // ─── Budgets ─────────────────────────────────────────────────
-    ...budgetTools,
-
-    // ─── Calendar ────────────────────────────────────────────────
-    ...calendarTools,
-
-    // ─── Habits ──────────────────────────────────────────────────
-    ...habitTools,
-
-    // ─── Search ──────────────────────────────────────────────────
-    ...searchTools,
-
-    // ─── Daily Status ────────────────────────────────────────────
-    ...dailyStatusTools,
-
-    // ─── Memory ──────────────────────────────────────────────────
-    ...memoryTools,
-
-    // ─── WhatsApp Media (Read-Only) ───────────────────────────────────
-    ...whatsappMediaTools,
-
-    // ─── Email (Read-Only IMAP) ───────────────────────────────────────
-    ...emailTools,
-
-    // ─── Email Digest ─────────────────────────────────────────────────
-    ...emailDigestTools,
-
-    // ─── Voice (Piper TTS) ────────────────────────────────────────────
-    ...voiceTools,
-
-    // ─── Immich Photo Server ──────────────────────────────────────────
-    ...immichTools,
+    ...megaTools,
 };
 
 /**
  * Returns all tools as an array of OpenAI-compatible function declarations.
- * This is the format OpenClaw expects when registering custom tools.
  */
 export function getToolDeclarations() {
     const tools = Object.values(toolRegistry).map(t => ({
@@ -99,6 +36,6 @@ export function getToolDeclarations() {
             parameters: t.parameters,
         }
     }));
-    console.log(`[Registry] Registered ${tools.length} tools: ${tools.map(t => t.function.name).join(', ')}`);
+    console.log(`[Registry] Registered ${tools.length} mega-tools: ${tools.map(t => t.function.name).join(', ')}`);
     return tools;
 }

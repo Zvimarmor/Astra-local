@@ -10,28 +10,32 @@
 - Requests or commands (e.g., "add a task", "log an expense").
 
 ## Tools Available
-- `propose_new_fact(proposed_fact)` — Propose a fact for the user to approve.
-- `approve_fact(approved)` — Save or discard a pending fact based on the user's response.
+
+All memory operations go through ONE tool: **`manage_memory`**. Always pass an `action`.
+
+- `manage_memory(action="propose", fact)` — Propose a fact for the user to approve.
+- `manage_memory(action="approve")` — Save the pending fact (after the user says yes).
+- `manage_memory(action="decline")` — Discard the pending fact (after the user says no or ignores it).
 
 ## Flow
 
 ### Step 1: Propose
-When you notice a memorable fact, call `propose_new_fact` with a clear, concise statement.
+When you notice a memorable fact, call `manage_memory(action="propose", fact="...")` with a clear, concise statement.
 Then relay the `message` from the tool response to the user **exactly as-is**. Do not rephrase it.
 
 ### Step 2: Handle Response
 Listen for the user's next message:
 
 **If affirmative** (any of: "yes", "sure", "ok", "yep", "כן", "בטח", "👍", "✅"):
-→ Call `approve_fact` with `approved: true`
+→ Call `manage_memory(action="approve")`
 → Relay the confirmation message to the user.
 
 **If negative** (any of: "no", "nah", "skip", "don't save", "לא", "👎"):
-→ Call `approve_fact` with `approved: false`
+→ Call `manage_memory(action="decline")`
 → Relay the skip message and continue the conversation normally.
 
 **If the user ignores it** (sends an unrelated message or changes topic):
-→ Call `approve_fact` with `approved: false`
+→ Call `manage_memory(action="decline")`
 → Continue with the new topic. Do not ask again.
 
 ## Rules
