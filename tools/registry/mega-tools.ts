@@ -49,6 +49,50 @@ function badAction(action: string, valid: string[]): Record<string, any> {
     return { status: 'error', error: `Unknown action "${action}". Valid actions: ${valid.join(', ')}.` };
 }
 
+/**
+ * Capability catalog for the `/tools` help reply. Category + blurb + example are
+ * curated, but the tool LIST and action counts are read live from `megaTools`
+ * below — so any tool we add later appears automatically (under "Other" until it
+ * gets an entry here). Keeps `/tools` self-maintaining.
+ */
+interface HelpEntry { category: string; blurb: string; example: string; }
+const HELP_META: Record<string, HelpEntry> = {
+    manage_tasks: { category: '📋 Productivity', blurb: 'to-dos & recurring reminders', example: '"Add a task to call the bank" · "Remind me every Monday to do laundry"' },
+    manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm"' },
+    manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
+    manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
+    manage_email: { category: '📥 Info & memory', blurb: 'read your inbox (can\'t send)', example: '"Any new emails?" · "Read email 12"' },
+    manage_photos: { category: '📥 Info & memory', blurb: 'Immich photo search & albums', example: '"Find beach photos" · "Make an album called Trip 2026"' },
+    manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
+    assistant_utils: { category: '📥 Info & memory', blurb: 'time, web search, daily status, text-to-speech', example: '"What time is it?" · "Search the web for…" · "What\'s my day look like?"' },
+    manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
+};
+const HELP_CATEGORY_ORDER = ['📋 Productivity', '💰 Money', '📥 Info & memory', '🎵 Media', '🧩 Other'];
+
+/** Build the grouped capabilities list straight from the live registry. */
+function buildHelp(): string {
+    const groups: Record<string, string[]> = {};
+    let totalActions = 0;
+    for (const [name, tool] of Object.entries(megaTools as Record<string, any>)) {
+        const actions: string[] = tool?.parameters?.properties?.action?.enum || [];
+        totalActions += actions.length || 1;
+        const meta = HELP_META[name];
+        const cat = meta?.category || '🧩 Other';
+        const blurb = meta?.blurb || String(tool.description || '').split('.')[0];
+        let line = `• ${name} — ${blurb}` + (actions.length ? ` (${actions.length} actions)` : '');
+        if (meta) line += `\n   e.g. ${meta.example}`;
+        (groups[cat] = groups[cat] || []).push(line);
+    }
+    const cats = [...HELP_CATEGORY_ORDER, ...Object.keys(groups).filter(c => !HELP_CATEGORY_ORDER.includes(c))];
+    const out: string[] = ['🧰 Astra — here\'s what I can do', ''];
+    for (const c of cats) {
+        if (!groups[c] || groups[c].length === 0) continue;
+        out.push(c, ...groups[c], '');
+    }
+    out.push(`Tip: say /tools or "what can you do?" anytime. (${Object.keys(megaTools).length} tools, ${totalActions} actions)`);
+    return out.join('\n');
+}
+
 export const megaTools = {
     // ─── 1. Tasks (one-off + recurring) ──────────────────────────────
     manage_tasks: {
@@ -266,13 +310,14 @@ export const megaTools = {
     assistant_utils: {
         name: 'assistant_utils',
         description:
-            "Misc assistant helpers. Choose action: 'current_time' (date/time in Israel), " +
+            "Misc assistant helpers. Choose action: 'help' (list everything Astra can do — use for /tools, /help, or 'what can you do?'), " +
+            "'current_time' (date/time in Israel), " +
             "'web_search' (real-time info; needs query), 'daily_status' (pending tasks + habits summary), " +
             "'text_to_speech' (needs text, max 500 chars), 'list_whatsapp_media' (recent received media; optional count, media_type).",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
+                action: { type: 'string', enum: ['help', 'current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
                 query: { type: 'string', description: 'Search query in English (for web_search)' },
                 text: { type: 'string', description: 'Text to speak, max 500 chars (for text_to_speech)' },
                 count: { type: 'number', description: 'How many media items (for list_whatsapp_media)' },
@@ -282,6 +327,8 @@ export const megaTools = {
         },
         execute: async (a: any = {}) => {
             switch (a.action) {
+                case 'help':
+                    return { status: 'success', message: buildHelp() };
                 case 'current_time': {
                     const t = new Date().toLocaleString('en-IL', { timeZone: config.timezone });
                     return { current_time: t };
@@ -290,7 +337,7 @@ export const megaTools = {
                 case 'daily_status': return call(dailyStatusTools as DomainMap, 'get_daily_status', {});
                 case 'text_to_speech': return call(voiceTools as DomainMap, 'text_to_speech', { text: a.text });
                 case 'list_whatsapp_media': return call(whatsappMediaTools as DomainMap, 'list_whatsapp_media', { count: a.count, media_type: a.media_type });
-                default: return badAction(a.action, ['current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media']);
+                default: return badAction(a.action, ['help', 'current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media']);
             }
         },
     },
