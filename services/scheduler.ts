@@ -31,6 +31,8 @@ const { config } = require(path.join(DIST, 'config.js'));
 const storage = require(path.join(DIST, 'storage.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 
 const TZ: string = config.timezone;
 const BOT_TOKEN: string = config.telegram.botToken;
@@ -61,6 +63,8 @@ function isDue(s: any, n: LocalNow): boolean {
     const nowMin = n.hour * 60 + n.minute;
     const schedMin = s.hour * 60 + s.minute;
     if (nowMin < schedMin) return false;
+    // Music alarms must NOT play late: tight 3-min window, then skip (user policy).
+    if (s.job === 'music_alarm') return nowMin - schedMin <= 3;
     // catch_up=0 would only fire within a grace window; defaults are all catch_up=1.
     if (!s.catch_up) return nowMin - schedMin <= 120; // 2h grace, then skip
     return true;
@@ -305,8 +309,8 @@ async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null
 
 // ─── Job dispatch. Returns { status, message } ────────────────────────
 
-async function runJob(job: string, n: LocalNow): Promise<{ status: string; message: string | null }> {
-    switch (job) {
+async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: string | null }> {
+    switch (s.job) {
         case 'recurring_gen': {
             const count = storage.generateDueRecurringTasks();
             return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 Generated ${count} recurring task${count === 1 ? '' : 's'} for today.` : null };
@@ -322,6 +326,17 @@ async function runJob(job: string, n: LocalNow): Promise<{ status: string; messa
         case 'email_digest': {
             const msg = await buildEmailDigest();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
+        case 'music_alarm': {
+            // payload carries {query,type}; play it via the compiled spotify tool.
+            let p: any = {};
+            try { p = JSON.parse(s.payload || '{}'); } catch { /* ignore */ }
+            if (!p.query) return { status: 'error', message: '⚠️ Music alarm has no query.' };
+            const res = await spotifyTools.spotify_play.execute({ query: p.query, type: p.type || 'track' });
+            if (res && res.status === 'success') {
+                return { status: 'sent', message: `⏰🎵 Alarm: ${res.message}` };
+            }
+            return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
         }
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
@@ -352,23 +367,27 @@ async function tick(): Promise<void> {
             // Claim the day's slot FIRST (idempotency across ticks/restarts).
             if (!storage.claimScheduleRun(s.id, n.dateStr, 'running')) continue;
 
-            // recurring_gen mutates the DB even during quiet hours (it sends no
-            // message unless it created tasks). All other jobs are message-only.
+            // Quiet-hours policy by job:
+            //  - recurring_gen: runs (mutates DB) but stays silent.
+            //  - music_alarm: ALWAYS fires + notifies, even at night/Shabbat (user policy).
+            //  - everything else: skipped during quiet.
             const quiet = inQuietHours(n);
-            if (quiet.quiet && s.job !== 'recurring_gen') {
+            const bypassesQuiet = s.job === 'recurring_gen' || s.job === 'music_alarm';
+            if (quiet.quiet && !bypassesQuiet) {
                 storage.updateScheduleRun(s.id, n.dateStr, 'skipped_quiet', quiet.reason);
                 console.log(`[Scheduler] ${s.job}: skipped (quiet: ${quiet.reason})`);
                 continue;
             }
 
             try {
-                const { status, message } = await runJob(s.job, n);
+                const { status, message } = await runJob(s, n);
                 let finalStatus = status;
-                if (message && !quiet.quiet) {
+                // recurring_gen is the only job that suppresses its notification during quiet.
+                const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
+                if (message && !suppressNotify) {
                     const ok = await sendTelegram(message);
                     finalStatus = ok ? 'sent' : 'error';
-                } else if (message && quiet.quiet) {
-                    // recurring_gen created tasks during quiet hours: don't notify now.
+                } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
                 }
                 storage.updateScheduleRun(s.id, n.dateStr, finalStatus, quiet.quiet ? quiet.reason : null);

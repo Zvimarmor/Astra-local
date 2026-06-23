@@ -300,14 +300,19 @@ export const megaTools = {
         name: 'manage_music',
         description:
             "Control Spotify playback on the Mac. Choose action: 'play' (resume, or play something specific via optional query + type), " +
-            "'pause', 'next', 'previous', 'volume' (needs volume_percent 0-100), or 'now_playing' (what's playing).",
+            "'pause', 'next', 'previous', 'volume' (needs volume_percent 0-100), 'now_playing' (what's playing), " +
+            "'set_alarm' (auto-play music at a time: needs query + hour, optional type/minute/days), 'list_alarms', or 'cancel_alarm' (needs alarm_id).",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['play', 'pause', 'next', 'previous', 'volume', 'now_playing'], description: 'Playback operation to perform' },
-                query: { type: 'string', description: "What to play, e.g. 'lofi beats' (for play; omit to resume)" },
-                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "For play: what kind of thing 'query' is. Default 'track'. Use 'album'/'playlist'/'artist'/'podcast' when the user asks for one." },
+                action: { type: 'string', enum: ['play', 'pause', 'next', 'previous', 'volume', 'now_playing', 'set_alarm', 'list_alarms', 'cancel_alarm'], description: 'Operation to perform' },
+                query: { type: 'string', description: "What to play, e.g. 'lofi beats' (for play/set_alarm; omit to resume)" },
+                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "For play/set_alarm: what kind of thing 'query' is. Default 'track'." },
                 volume_percent: { type: 'number', description: 'Volume 0-100 (for volume)' },
+                hour: { type: 'number', description: 'For set_alarm: hour 0-23 (local time).' },
+                minute: { type: 'number', description: 'For set_alarm: minute 0-59 (default 0).' },
+                days: { type: 'string', description: "For set_alarm: 'daily' or CSV weekday numbers 0=Sun..6=Sat (e.g. '1,2,3,4,5' weekdays). Default 'daily'." },
+                alarm_id: { type: 'number', description: 'For cancel_alarm: the alarm id from list_alarms.' },
             },
             required: ['action'],
         },
@@ -319,7 +324,10 @@ export const megaTools = {
                 case 'previous': return call(spotifyTools as DomainMap, 'spotify_previous', {});
                 case 'volume': return call(spotifyTools as DomainMap, 'spotify_volume', { volume_percent: a.volume_percent });
                 case 'now_playing': return call(spotifyTools as DomainMap, 'spotify_now_playing', {});
-                default: return badAction(a.action, ['play', 'pause', 'next', 'previous', 'volume', 'now_playing']);
+                case 'set_alarm': return call(spotifyTools as DomainMap, 'spotify_set_alarm', { query: a.query, type: a.type, hour: a.hour, minute: a.minute, days: a.days });
+                case 'list_alarms': return call(spotifyTools as DomainMap, 'spotify_list_alarms', {});
+                case 'cancel_alarm': return call(spotifyTools as DomainMap, 'spotify_cancel_alarm', { alarm_id: a.alarm_id });
+                default: return badAction(a.action, ['play', 'pause', 'next', 'previous', 'volume', 'now_playing', 'set_alarm', 'list_alarms', 'cancel_alarm']);
             }
         },
     },
