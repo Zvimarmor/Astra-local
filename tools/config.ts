@@ -1,18 +1,42 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import os from 'os';
 
-dotenv.config();
+/**
+ * Resolve the project root independently of process.cwd().
+ *
+ * IMPORTANT: OpenClaw's gateway spawns the MCP server with its own working
+ * directory (~/.openclaw), NOT the repo. If paths are derived from
+ * process.cwd(), `.env` is never found and better-sqlite3 throws
+ * "directory does not exist" on import — the MCP server dies with
+ * "Connection closed" and the model silently loses every Astra tool.
+ * Anchor everything to the compiled file location instead.
+ */
+function findProjectRoot(start: string): string {
+    let dir = start;
+    for (let i = 0; i < 6; i++) {
+        if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return path.resolve(start, '..');
+}
+
+const PROJECT_ROOT = findProjectRoot(__dirname);
+
+dotenv.config({ path: path.join(PROJECT_ROOT, '.env') });
 
 export const config = {
     ownerPhoneNumber: (process.env.OWNER_PHONE_NUMBER || '').replace(/\D/g, ''),
     calendarId: (process.env.CALENDAR_ID || 'primary').trim(),
-    serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(process.cwd(), 'data', 'service_account.json'),
+    serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(PROJECT_ROOT, 'data', 'service_account.json'),
     ollamaBaseUrl: (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').trim(),
     ollamaModel: (process.env.OLLAMA_MODEL || 'hermes3:8b-llama3.1-q8_0').trim(),
     timezone: process.env.TIMEZONE || 'Asia/Jerusalem',
     whitelistJids: (process.env.WHITELIST_JIDS || '').split(',').map(j => j.trim()).filter(Boolean),
-    dbPath: process.env.DB_PATH || path.join(process.cwd(), 'data', 'memory.db'),
+    dbPath: process.env.DB_PATH || path.join(PROJECT_ROOT, 'data', 'memory.db'),
 
     // IMAP — Read-only email access (no SMTP)
     imapAccounts: {
@@ -33,7 +57,7 @@ export const config = {
     // Piper TTS (local text-to-speech)
     piperBinaryPath: process.env.PIPER_BINARY_PATH || '/opt/homebrew/bin/piper',
     piperVoiceModel: process.env.PIPER_VOICE_MODEL || path.join(os.homedir(), 'piper-voices', 'en-us-amy-medium.onnx'),
-    ttsOutputDir: path.join(process.cwd(), 'data', 'media', 'tts'),
+    ttsOutputDir: path.join(PROJECT_ROOT, 'data', 'media', 'tts'),
 
     // Dashboard
     dashboardPort: parseInt(process.env.DASHBOARD_PORT || '3001', 10),
@@ -42,6 +66,15 @@ export const config = {
     // Immich Photo Server
     immichBaseUrl: process.env.IMMICH_BASE_URL || 'http://localhost:2283',
     immichApiKey: process.env.IMMICH_API_KEY || '',
+
+    // Spotify (Web API playback control → spotifyd Connect device)
+    spotify: {
+        clientId: process.env.SPOTIFY_CLIENT_ID || '',
+        clientSecret: process.env.SPOTIFY_CLIENT_SECRET || '',
+        refreshToken: process.env.SPOTIFY_REFRESH_TOKEN || '',
+        // The spotifyd device_name on this Mac (see ~/.config/spotifyd/spotifyd.conf)
+        deviceName: process.env.SPOTIFY_DEVICE_NAME || 'Astra_Mac_Mini',
+    },
 };
 
 // Boot-time validation

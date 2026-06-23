@@ -5,12 +5,12 @@
 - User asks: "daily summary", "briefing", "what do I have today?"
 
 ## Tools Available
-- `get_daily_status()` — Get pending tasks and uncompleted habits.
-- `list_calendar_events(maxResults)` — Get today's calendar events.
-- `get_expense_summary(period)` — Get recent expense totals.
-- `check_budget_alerts()` — Check budget status.
-- `get_financial_overview(period)` — Get income vs expense snapshot.
-- `get_current_time()` — Get today's date.
+- `assistant_utils(action="daily_status")` — Get pending tasks and uncompleted habits.
+- `manage_calendar(action="list", max_results?)` — Get today's calendar events.
+- `manage_finances(action="expense_summary", period?)` — Get recent expense totals.
+- `manage_finances(action="budget_alerts")` — Check budget status.
+- `manage_finances(action="financial_overview", period?)` — Get income vs expense snapshot.
+- `assistant_utils(action="current_time")` — Get today's date.
 
 ## Morning Briefing Format (08:00)
 ```
@@ -50,7 +50,7 @@ Good night! 😴
 ```
 
 ## Rules
-1. Always call all relevant tools to build a complete picture.
+1. Call all relevant tools to build a complete picture (`assistant_utils action="daily_status"`, `manage_calendar action="list"`, the `manage_finances` actions).
 2. Keep the summary concise and scannable.
 3. If there are no events or tasks, say so positively ("No events scheduled — a free day!").
 4. In the evening, highlight the highest-priority task for tomorrow.
