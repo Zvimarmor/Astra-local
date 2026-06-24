@@ -139,6 +139,38 @@ db.exec(`
     }
 }
 
+// Migration: add a free-form payload column to schedules (used by music_alarm jobs
+// to carry {query,type}). Guarded so it's a no-op once the column exists.
+{
+    const cols = db.prepare('PRAGMA table_info(schedules)').all() as { name: string }[];
+    if (!cols.some(c => c.name === 'payload')) {
+        db.exec('ALTER TABLE schedules ADD COLUMN payload TEXT');
+    }
+}
+
+// Ensure the analytical jobs exist (added after the original 5-job seed, so this
+// must run as an idempotent "insert if missing" rather than the empty-table seed
+// above — existing DBs already have rows). LLM-phrased, deterministic fallback.
+{
+    const ensure = db.prepare(
+        `INSERT INTO schedules (job, hour, minute, days, enabled, catch_up)
+         SELECT ?, ?, ?, ?, 1, 1
+         WHERE NOT EXISTS (SELECT 1 FROM schedules WHERE job = ?)`
+    );
+    // weekly_recap: Saturday 20:30 (after Shabbat quiet ends at 20:00), days '6' = Sat.
+    // monthly_finance_review: scheduled daily 21:00; the builder self-gates to the LAST
+    //   day of the month so the month-to-date overview covers the full ending month
+    //   (no day_of_month column needed).
+    const extras: [string, number, number, string][] = [
+        ['weekly_recap', 20, 30, '6'],
+        ['monthly_finance_review', 21, 0, 'daily'],
+    ];
+    const tx = db.transaction(() => {
+        for (const [job, h, m, days] of extras) ensure.run(job, h, m, days, job);
+    });
+    tx();
+}
+
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\n[Storage] Closing database connection...');
@@ -628,14 +660,46 @@ export interface Schedule {
     days: string;       // 'daily' or CSV of 0-6 (0=Sunday)
     enabled: number;
     catch_up: number;
+    payload: string | null; // JSON for parametrized jobs (e.g. music_alarm {query,type})
 }
 
 export function getEnabledSchedules(): Schedule[] {
-    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up FROM schedules WHERE enabled = 1').all() as Schedule[];
+    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up, payload FROM schedules WHERE enabled = 1').all() as Schedule[];
 }
 
 export function getSchedules(): Schedule[] {
-    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up FROM schedules ORDER BY hour, minute').all() as Schedule[];
+    return db.prepare('SELECT id, job, hour, minute, days, enabled, catch_up, payload FROM schedules ORDER BY hour, minute').all() as Schedule[];
+}
+
+// ─── Music alarms (rows in `schedules` with job='music_alarm') ────────
+// catch_up=0 + the scheduler's tight grace = "skip if missed" (never plays late).
+
+export interface MusicAlarm {
+    id: number; hour: number; minute: number; days: string;
+    query: string; type: string;
+}
+
+export function addMusicAlarm(query: string, type: string, hour: number, minute: number = 0, days: string = 'daily'): { id: number } {
+    const payload = JSON.stringify({ query, type: type || 'track' });
+    const info = db.prepare(
+        "INSERT INTO schedules (job, hour, minute, days, enabled, catch_up, payload) VALUES ('music_alarm', ?, ?, ?, 1, 0, ?)"
+    ).run(hour, minute, days, payload);
+    return { id: Number(info.lastInsertRowid) };
+}
+
+export function getMusicAlarms(): MusicAlarm[] {
+    const rows = db.prepare("SELECT id, hour, minute, days, payload FROM schedules WHERE job = 'music_alarm' ORDER BY hour, minute").all() as any[];
+    return rows.map(r => {
+        let p: any = {};
+        try { p = JSON.parse(r.payload || '{}'); } catch { /* ignore */ }
+        return { id: r.id, hour: r.hour, minute: r.minute, days: r.days, query: p.query || '', type: p.type || 'track' };
+    });
+}
+
+export function cancelMusicAlarm(id: number): boolean {
+    const info = db.prepare("DELETE FROM schedules WHERE id = ? AND job = 'music_alarm'").run(id);
+    db.prepare('DELETE FROM schedule_runs WHERE schedule_id = ?').run(id); // tidy any run rows
+    return info.changes > 0;
 }
 
 /** True if this schedule already has a run row for the given local date. */

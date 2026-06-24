@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Astra is a private, local-only personal AI assistant running on a Mac Mini M4 (16GB). It is **not a standalone app** — it is a set of TypeScript tools/services that plug into a separately-installed **OpenClaw gateway**, which drives a local **Ollama** LLM (`hermes3:8b-llama3.1-q8_0`) and exposes the agent over a chat channel (currently Telegram `@Astra_beta_bot`; a WhatsApp media listener also exists). This repo owns the *tools, skills, knowledge, and background services* — OpenClaw itself and its config (`~/.openclaw/openclaw.json`) live outside the repo.
+Astra is a private, local-only personal AI assistant running on a Mac Mini M4 (16GB). It is **not a standalone app** — it is a set of TypeScript tools/services that plug into a separately-installed **OpenClaw gateway**, which drives a local **Ollama** LLM (`qwen3:8b` — switched from `hermes3:8b` for more stable tool-calling) and exposes the agent over a chat channel (currently Telegram `@Astra_beta_bot`; a WhatsApp media listener also exists). This repo owns the *tools, skills, knowledge, and background services* — OpenClaw itself and its config (`~/.openclaw/openclaw.json`) live outside the repo.
 
 ## Build & run
 
@@ -23,7 +23,7 @@ npm run build:all        # both
 ## Architecture: how a message becomes a tool call
 
 ```
-Telegram ─► OpenClaw gateway (~/.openclaw, port 18789) ─► Ollama (hermes3 8B, Metal GPU)
+Telegram ─► OpenClaw gateway (~/.openclaw, port 18789) ─► Ollama (qwen3 8B, Metal GPU)
                      │                                          │ decides tool call
                      │  spawns MCP server (stdio) ◄─────────────┘
                      ▼
@@ -67,7 +67,7 @@ These are **standalone long-running processes, independent of OpenClaw and the a
 - `whatsapp-listener.ts` — read-only Baileys listener. Deliberately has **no exports** and **never calls `sendMessage`**, so the LLM has no code path to send WhatsApp messages; it only downloads incoming media into `data/media/whatsapp/` and records metadata in the shared DB. Preserve this isolation — do not export from it or add send capability.
 - `dashboard.ts` (+ `dashboard.html`) — local status dashboard.
 - `immich-organizer.ts` — Immich photo organization.
-- `scheduler.ts` — **proactive scheduler** (launchd `com.astra.scheduler`). Deterministic: on a 60s tick it reads the `schedules` table, and for each due job builds a message **straight from SQLite** and pushes it to Telegram via the Bot API. **No LLM in the loop** — it can't hallucinate "I sent it" and runs even when Ollama is cold. Jobs: `recurring_gen` (07:00, generates tasks from templates), `morning_briefing` (08:00), `budget_check` (12:00, silent unless alerts), `email_digest` (17:00, silent if nothing), `evening_review` (20:00). Idempotency = `schedule_runs UNIQUE(schedule_id, run_date)` (one send per day; "fire late, once" on catch-up). Quiet hours: night 22:00–07:00 + Shabbat (Fri 18:00→Sat 20:00). It `require()`s the compiled `dist/` tool modules (`storage.js`, `email-digest.js`) at runtime, so **`npm run build` must run before `build:services`** for it to work. The Telegram bot token lives in `.env` as `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_OWNER_CHAT_ID`).
+- `scheduler.ts` — **proactive scheduler** (launchd `com.astra.scheduler`). Deterministic: on a 60s tick it reads the `schedules` table, and for each due job builds a message **straight from SQLite** and pushes it to Telegram via the Bot API. The 5 core jobs have **no LLM in the loop** — they can't hallucinate "I sent it" and run even when Ollama is cold. Core jobs: `recurring_gen` (07:00, generates tasks from templates), `morning_briefing` (08:00), `budget_check` (12:00, silent unless alerts), `email_digest` (17:00, silent if nothing), `evening_review` (20:00). Two **analytical** jobs additionally call the local LLM *only to reword a deterministic draft* (numbers come from SQLite; on any Ollama failure/timeout `phraseWithLLM()` returns the exact draft and still sends — the LLM never gates a send or supplies a fact): `weekly_recap` (Sat 20:30) and `monthly_finance_review` (daily 21:00, self-gates to the last day of the month). A `music_alarm` job (user-created via `manage_music(action="set_alarm")`, rows with `job='music_alarm'` + a `payload` JSON `{query,type}`) calls `spotify_play` at its time to auto-start music; it **bypasses quiet hours** (always fires, even night/Shabbat) and uses a **tight 3-min grace** (`catch_up=0`) so it never plays late. Idempotency = `schedule_runs UNIQUE(schedule_id, run_date)` (one send per day; "fire late, once" on catch-up). Quiet hours: night 22:00–07:00 + Shabbat (Fri 18:00→Sat 20:00) — except `music_alarm` and `recurring_gen`. It `require()`s the compiled `dist/` tool modules (`storage.js`, `email-digest.js`, `spotify.js`) at runtime, so **`npm run build` must run before `build:services`** for it to work. The Telegram bot token lives in `.env` as `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_OWNER_CHAT_ID`).
 
 ## Hard-won gotchas
 

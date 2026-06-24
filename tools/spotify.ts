@@ -1,4 +1,16 @@
 import { config } from './config';
+import { addMusicAlarm, getMusicAlarms, cancelMusicAlarm } from './storage';
+
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function describeDays(days: string): string {
+    if (!days || days === 'daily') return 'every day';
+    const nums = days.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (nums.length === 5 && [1, 2, 3, 4, 5].every(d => nums.includes(d))) return 'weekdays';
+    return nums.map(n => DOW[n] ?? '?').join(', ');
+}
+function hhmm(h: number, m: number): string {
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 /**
  * Spotify Playback Control — Web API → spotifyd Connect device
@@ -88,26 +100,49 @@ function nowPlayingSummary(data: any): string {
     return `${state}: "${t.name}"${artists ? ` — ${artists}` : ''}`;
 }
 
+/** Human-friendly label for a search result, by Spotify object type. */
+function describeItem(searchType: string, item: any): string {
+    const artists = (item.artists || []).map((a: any) => a.name).join(', ');
+    switch (searchType) {
+        case 'track': return `"${item.name}"${artists ? ` — ${artists}` : ''}`;
+        case 'album': return `album "${item.name}"${artists ? ` — ${artists}` : ''}`;
+        case 'playlist': return `playlist "${item.name}"${item.owner?.display_name ? ` by ${item.owner.display_name}` : ''}`;
+        case 'artist': return `artist "${item.name}"`;
+        case 'show': return `podcast "${item.name}"${item.publisher ? ` — ${item.publisher}` : ''}`;
+        default: return `"${item.name}"`;
+    }
+}
+
 export const spotifyTools = {
     spotify_play: {
         name: 'spotify_play',
-        description: "Start or resume Spotify playback on the Mac. Optionally search for and play a track/artist.",
+        description: "Start or resume Spotify playback on the Mac. Optionally search for and play a track, album, playlist, artist, or podcast.",
         parameters: {
             type: 'object',
             properties: {
-                query: { type: 'string', description: "Optional: what to play, e.g. 'Bohemian Rhapsody' or 'lofi beats'. Omit to resume the current track." },
+                query: { type: 'string', description: "Optional: what to play, e.g. 'Bohemian Rhapsody', 'Dark Side of the Moon', 'The Daily podcast'. Omit to resume the current track." },
+                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "What kind of thing 'query' is. Default 'track'. Use 'album', 'playlist', 'artist', or 'podcast' when the user asks for one." },
             },
         },
         execute: async (args: any = {}) => {
             try {
                 const { id, warning } = await resolveDeviceId();
                 if (args.query) {
-                    const search = await api(`/search?q=${encodeURIComponent(args.query)}&type=track&limit=1`);
-                    const track = search?.tracks?.items?.[0];
-                    if (!track) return { status: 'error', error: `No track found for "${args.query}".` };
-                    await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT', body: { uris: [track.uri] } });
-                    const artists = (track.artists || []).map((a: any) => a.name).join(', ');
-                    return { status: 'success', message: `▶️ Playing "${track.name}"${artists ? ` — ${artists}` : ''}`, warning };
+                    const kind = String(args.type || 'track').toLowerCase();
+                    const searchType = kind === 'podcast' ? 'show' : kind;
+                    const buckets: Record<string, string> = {
+                        track: 'tracks', album: 'albums', playlist: 'playlists', artist: 'artists', show: 'shows',
+                    };
+                    const bucket = buckets[searchType];
+                    if (!bucket) return { status: 'error', error: `Unknown play type "${kind}". Use track, album, playlist, artist, or podcast.` };
+                    const search = await api(`/search?q=${encodeURIComponent(args.query)}&type=${searchType}&limit=5`);
+                    const item = (search?.[bucket]?.items || []).find((x: any) => x && x.uri);
+                    if (!item) return { status: 'error', error: `No ${kind} found for "${args.query}".` };
+                    // A track plays as a one-item uri list; album/playlist/artist/show play
+                    // as a *context* (context_uri) so the whole thing queues up.
+                    const body = searchType === 'track' ? { uris: [item.uri] } : { context_uri: item.uri };
+                    await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT', body });
+                    return { status: 'success', message: `▶️ Playing ${describeItem(searchType, item)}`, warning };
                 }
                 await api(`/me/player/play${deviceQuery(id)}`, { method: 'PUT' });
                 return { status: 'success', message: '▶️ Resumed playback.', warning };
@@ -192,6 +227,73 @@ export const spotifyTools = {
             try {
                 const data = await api('/me/player/currently-playing');
                 return { status: 'success', message: nowPlayingSummary(data) };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+
+    // ─── Music alarms (the deterministic scheduler plays these at their time) ──
+    spotify_set_alarm: {
+        name: 'spotify_set_alarm',
+        description: "Schedule music to start automatically at a given time. The background scheduler plays it (it fires even at night/Shabbat, and is skipped if the time was missed).",
+        parameters: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: "What to play, e.g. 'lofi beats', 'Pink Floyd', 'The Daily'." },
+                type: { type: 'string', enum: ['track', 'album', 'playlist', 'artist', 'podcast'], description: "Kind of thing to play. Default 'track'." },
+                hour: { type: 'number', description: 'Hour 0-23 (local time).' },
+                minute: { type: 'number', description: 'Minute 0-59 (default 0).' },
+                days: { type: 'string', description: "When it repeats: 'daily', or CSV of weekday numbers 0=Sun..6=Sat (e.g. '1,2,3,4,5' for weekdays). Default 'daily'." },
+            },
+            required: ['query', 'hour'],
+        },
+        execute: async (args: any = {}) => {
+            try {
+                const hour = parseInt(args.hour, 10);
+                const minute = Math.max(0, Math.min(59, parseInt(args.minute ?? 0, 10) || 0));
+                if (isNaN(hour) || hour < 0 || hour > 23) return { status: 'error', error: 'hour must be 0-23.' };
+                if (!args.query) return { status: 'error', error: 'query is required.' };
+                const type = args.type || 'track';
+                const days = (args.days || 'daily').trim();
+                const { id } = addMusicAlarm(String(args.query), type, hour, minute, days);
+                return { status: 'success', message: `⏰ Alarm #${id} set: ${type} "${args.query}" at ${hhmm(hour, minute)}, ${describeDays(days)}.` };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+
+    spotify_list_alarms: {
+        name: 'spotify_list_alarms',
+        description: 'List all scheduled music alarms.',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => {
+            try {
+                const alarms = getMusicAlarms();
+                if (alarms.length === 0) return { status: 'success', message: 'No music alarms set.' };
+                const lines = alarms.map(a => `⏰ #${a.id}: ${a.type} "${a.query}" at ${hhmm(a.hour, a.minute)}, ${describeDays(a.days)}`);
+                return { status: 'success', message: lines.join('\n'), alarms };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+
+    spotify_cancel_alarm: {
+        name: 'spotify_cancel_alarm',
+        description: 'Cancel a music alarm by its id (from list_alarms).',
+        parameters: {
+            type: 'object',
+            properties: { alarm_id: { type: 'number', description: 'The alarm id to cancel.' } },
+            required: ['alarm_id'],
+        },
+        execute: async (args: any = {}) => {
+            try {
+                const ok = cancelMusicAlarm(parseInt(args.alarm_id, 10));
+                return ok
+                    ? { status: 'success', message: `🗑️ Cancelled alarm #${args.alarm_id}.` }
+                    : { status: 'error', error: `No alarm #${args.alarm_id} found.` };
             } catch (err: any) {
                 return { status: 'error', error: err.message };
             }

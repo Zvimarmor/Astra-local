@@ -14,10 +14,17 @@
     "type": "git",
     "url": "https://github.com/Zvimarmor/Astra-local.git"
   },
-  "keywords": ["ai-agent", "local-llm", "openclaw", "ollama", "personal-assistant"],
+  "keywords": [
+    "ai-agent",
+    "local-llm",
+    "openclaw",
+    "ollama",
+    "personal-assistant"
+  ],
   "author": "Zvi Marmor",
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.4.2",

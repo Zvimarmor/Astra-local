@@ -31,6 +31,8 @@ const { config } = require(path.join(DIST, 'config.js'));
 const storage = require(path.join(DIST, 'storage.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 
 const TZ: string = config.timezone;
 const BOT_TOKEN: string = config.telegram.botToken;
@@ -61,6 +63,8 @@ function isDue(s: any, n: LocalNow): boolean {
     const nowMin = n.hour * 60 + n.minute;
     const schedMin = s.hour * 60 + s.minute;
     if (nowMin < schedMin) return false;
+    // Music alarms must NOT play late: tight 3-min window, then skip (user policy).
+    if (s.job === 'music_alarm') return nowMin - schedMin <= 3;
     // catch_up=0 would only fire within a grace window; defaults are all catch_up=1.
     if (!s.catch_up) return nowMin - schedMin <= 120; // 2h grace, then skip
     return true;
@@ -102,6 +106,50 @@ async function sendTelegram(text: string): Promise<boolean> {
     } catch (err: any) {
         console.error('[Scheduler] Telegram send error:', err.message);
         return false;
+    }
+}
+
+// ─── Optional LLM phrasing (analytical jobs only) ─────────────────────
+// The numbers ALWAYS come from SQLite. The local model is used ONLY to reword a
+// pre-built deterministic draft more warmly. On ANY failure (Ollama cold/down,
+// timeout, HTTP error, empty/short output) we return the exact deterministic text
+// and still send. The LLM never gates a send and never supplies a fact — this
+// preserves the scheduler's no-hallucination guarantee.
+const OLLAMA_URL: string = config.ollamaBaseUrl;
+const OLLAMA_MODEL: string = config.ollamaModel;
+const PHRASE_TIMEOUT_MS = 30000;
+
+const PHRASE_SYSTEM =
+    'You are Astra, a warm personal assistant. Rewrite the draft summary so it reads ' +
+    'naturally and encouragingly as a Telegram message. Rules: keep it concise; KEEP ' +
+    'EVERY NUMBER, NAME, CATEGORY AND EMOJI EXACTLY as given; never invent, add, or drop ' +
+    'a fact; no preamble or sign-off of your own — output only the message text.';
+
+async function phraseWithLLM(draft: string): Promise<string> {
+    try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), PHRASE_TIMEOUT_MS);
+        const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+                model: OLLAMA_MODEL,
+                stream: false,
+                think: false,
+                options: { temperature: 0.4 },
+                messages: [
+                    { role: 'system', content: PHRASE_SYSTEM },
+                    { role: 'user', content: draft },
+                ],
+            }),
+        }).finally(() => clearTimeout(timer));
+        if (!res.ok) return draft;
+        const data: any = await res.json();
+        const text = String(data?.message?.content || '').trim();
+        return text.length >= 10 ? text : draft; // guard against empty/garbage
+    } catch {
+        return draft; // Ollama cold or unreachable → deterministic draft, still sends
     }
 }
 
@@ -204,10 +252,65 @@ async function buildEmailDigest(): Promise<string | null> {
     return lines.length > 1 ? lines.join('\n') : null;
 }
 
+// ─── Analytical builders (deterministic facts + LLM phrasing) ─────────
+
+async function buildWeeklyRecap(dateStr: string): Promise<string> {
+    const exp = storage.getExpenseSummary('week');
+    const fin = storage.getFinancialOverview('week');
+    const tasks = storage.getPendingTasks();
+    const recurringCount = storage.getActiveRecurringTasks().length;
+    const topCats = exp.categories.slice(0, 3).map((c: any) => `${c.category} ${NIS(c.total)}`).join(', ');
+
+    const lines: string[] = [`📈 Weekly Recap — week ending ${dateStr}`, ''];
+    lines.push(`💸 Spent this week: ${NIS(exp.total)}` + (topCats ? ` (top: ${topCats})` : ''));
+    if (fin.total_income > 0 || fin.total_expenses > 0) {
+        const sign = fin.net >= 0 ? '+' : '';
+        lines.push(`💰 Net this week: ${sign}${NIS(fin.net)} (in ${NIS(fin.total_income)}, out ${NIS(fin.total_expenses)})`);
+    }
+    lines.push(`✅ Open tasks: ${tasks.length}`);
+    if (recurringCount > 0) lines.push(`🔄 Active recurring templates: ${recurringCount}`);
+    lines.push('', "Here's to a strong week ahead! 💪");
+
+    return phraseWithLLM(lines.join('\n')); // draft is authoritative; LLM only rewords
+}
+
+async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null> {
+    // Self-gate: only fire on the LAST day of the month, so the month-to-date
+    // overview covers the full month that is ending.
+    const d = new Date(`${dateStr}T12:00:00`);
+    const next = new Date(d);
+    next.setDate(d.getDate() + 1);
+    if (next.getMonth() === d.getMonth()) return null; // not the last day yet → silent
+
+    const fin = storage.getFinancialOverview('month');
+    const exp = storage.getExpenseSummary('month');
+    const alerts = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
+    const monthName = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: TZ });
+    const sign = fin.net >= 0 ? '+' : '';
+
+    const lines: string[] = [`🗓️ Monthly Finance Review — ${monthName}`, ''];
+    lines.push(`💰 Income: ${NIS(fin.total_income)} | Expenses: ${NIS(fin.total_expenses)} | Net: ${sign}${NIS(fin.net)}`);
+    if (exp.categories.length > 0) {
+        lines.push('', '📊 Top spending categories:');
+        exp.categories.slice(0, 5).forEach((c: any) => lines.push(`  • ${c.category}: ${NIS(c.total)} (${c.count}x)`));
+    }
+    if (alerts.length > 0) {
+        lines.push('', '⚠️ Budgets over / at risk:');
+        for (const a of alerts) {
+            const tag = a.alert === 'over' ? '🔴' : '🟡';
+            const note = a.alert === 'over' ? 'OVER' : `${a.percent}%`;
+            lines.push(`  ${tag} ${a.category}: ${NIS(a.spent)}/${NIS(a.limit)} — ${note}`);
+        }
+    }
+    lines.push('', 'New month, fresh start. 🚀');
+
+    return phraseWithLLM(lines.join('\n'));
+}
+
 // ─── Job dispatch. Returns { status, message } ────────────────────────
 
-async function runJob(job: string, n: LocalNow): Promise<{ status: string; message: string | null }> {
-    switch (job) {
+async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: string | null }> {
+    switch (s.job) {
         case 'recurring_gen': {
             const count = storage.generateDueRecurringTasks();
             return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 Generated ${count} recurring task${count === 1 ? '' : 's'} for today.` : null };
@@ -222,6 +325,23 @@ async function runJob(job: string, n: LocalNow): Promise<{ status: string; messa
         }
         case 'email_digest': {
             const msg = await buildEmailDigest();
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
+        case 'music_alarm': {
+            // payload carries {query,type}; play it via the compiled spotify tool.
+            let p: any = {};
+            try { p = JSON.parse(s.payload || '{}'); } catch { /* ignore */ }
+            if (!p.query) return { status: 'error', message: '⚠️ Music alarm has no query.' };
+            const res = await spotifyTools.spotify_play.execute({ query: p.query, type: p.type || 'track' });
+            if (res && res.status === 'success') {
+                return { status: 'sent', message: `⏰🎵 Alarm: ${res.message}` };
+            }
+            return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
+        }
+        case 'weekly_recap':
+            return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
+        case 'monthly_finance_review': {
+            const msg = await buildMonthlyFinanceReview(n.dateStr);
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
         }
         default:
@@ -247,23 +367,27 @@ async function tick(): Promise<void> {
             // Claim the day's slot FIRST (idempotency across ticks/restarts).
             if (!storage.claimScheduleRun(s.id, n.dateStr, 'running')) continue;
 
-            // recurring_gen mutates the DB even during quiet hours (it sends no
-            // message unless it created tasks). All other jobs are message-only.
+            // Quiet-hours policy by job:
+            //  - recurring_gen: runs (mutates DB) but stays silent.
+            //  - music_alarm: ALWAYS fires + notifies, even at night/Shabbat (user policy).
+            //  - everything else: skipped during quiet.
             const quiet = inQuietHours(n);
-            if (quiet.quiet && s.job !== 'recurring_gen') {
+            const bypassesQuiet = s.job === 'recurring_gen' || s.job === 'music_alarm';
+            if (quiet.quiet && !bypassesQuiet) {
                 storage.updateScheduleRun(s.id, n.dateStr, 'skipped_quiet', quiet.reason);
                 console.log(`[Scheduler] ${s.job}: skipped (quiet: ${quiet.reason})`);
                 continue;
             }
 
             try {
-                const { status, message } = await runJob(s.job, n);
+                const { status, message } = await runJob(s, n);
                 let finalStatus = status;
-                if (message && !quiet.quiet) {
+                // recurring_gen is the only job that suppresses its notification during quiet.
+                const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
+                if (message && !suppressNotify) {
                     const ok = await sendTelegram(message);
                     finalStatus = ok ? 'sent' : 'error';
-                } else if (message && quiet.quiet) {
-                    // recurring_gen created tasks during quiet hours: don't notify now.
+                } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
                 }
                 storage.updateScheduleRun(s.id, n.dateStr, finalStatus, quiet.quiet ? quiet.reason : null);
