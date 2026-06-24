@@ -19,3 +19,6 @@ openclaw.json
 
 # Machine-specific symlinks into Homebrew node_modules
 plugin-skills/
+
+# Root-level Google service-account key (live private key)
+/service_account.json

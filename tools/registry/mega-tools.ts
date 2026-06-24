@@ -313,13 +313,16 @@ export const megaTools = {
             "Misc assistant helpers. Choose action: 'help' (list everything Astra can do — use for /tools, /help, or 'what can you do?'), " +
             "'current_time' (date/time in Israel), " +
             "'web_search' (real-time info; needs query), 'daily_status' (pending tasks + habits summary), " +
+            "'speak' (say a reply aloud — speakers or Telegram voice per the current mode; needs text), " +
+            "'set_voice_mode' (needs mode: speakers/telegram/off), 'get_voice_mode', " +
             "'text_to_speech' (needs text, max 500 chars), 'list_whatsapp_media' (recent received media; optional count, media_type).",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['help', 'current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
+                action: { type: 'string', enum: ['help', 'current_time', 'web_search', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
                 query: { type: 'string', description: 'Search query in English (for web_search)' },
-                text: { type: 'string', description: 'Text to speak, max 500 chars (for text_to_speech)' },
+                text: { type: 'string', description: 'Text to speak (for speak / text_to_speech)' },
+                mode: { type: 'string', enum: ['speakers', 'telegram', 'off'], description: 'Voice output mode (for set_voice_mode)' },
                 count: { type: 'number', description: 'How many media items (for list_whatsapp_media)' },
                 media_type: { type: 'string', enum: ['image', 'video', 'document'], description: 'Filter media (for list_whatsapp_media)' },
             },
@@ -335,9 +338,12 @@ export const megaTools = {
                 }
                 case 'web_search': return call(searchTools as DomainMap, 'web_search', { query: a.query });
                 case 'daily_status': return call(dailyStatusTools as DomainMap, 'get_daily_status', {});
+                case 'speak': return call(voiceTools as DomainMap, 'speak', { text: a.text });
+                case 'set_voice_mode': return call(voiceTools as DomainMap, 'set_voice_mode', { mode: a.mode });
+                case 'get_voice_mode': return call(voiceTools as DomainMap, 'get_voice_mode', {});
                 case 'text_to_speech': return call(voiceTools as DomainMap, 'text_to_speech', { text: a.text });
                 case 'list_whatsapp_media': return call(whatsappMediaTools as DomainMap, 'list_whatsapp_media', { count: a.count, media_type: a.media_type });
-                default: return badAction(a.action, ['help', 'current_time', 'web_search', 'daily_status', 'text_to_speech', 'list_whatsapp_media']);
+                default: return badAction(a.action, ['help', 'current_time', 'web_search', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech', 'list_whatsapp_media']);
             }
         },
     },

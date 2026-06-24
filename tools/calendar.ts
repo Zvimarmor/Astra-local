@@ -10,6 +10,18 @@ import { config } from './config';
 
 const TIMEZONE = config.timezone;
 
+/** Compact a raw Google event into the few fields the model actually needs. */
+function compactEvent(e: any) {
+    return {
+        id: e.id,
+        title: e.summary || '(no title)',
+        start: e.start?.dateTime || e.start?.date || null,
+        end: e.end?.dateTime || e.end?.date || null,
+        all_day: Boolean(e.start?.date && !e.start?.dateTime),
+        location: e.location || undefined,
+    };
+}
+
 export const calendarTools = {
     list_calendar_events: {
         name: "list_calendar_events",
@@ -31,7 +43,8 @@ export const calendarTools = {
                     singleEvents: true,
                     orderBy: 'startTime',
                 });
-                return { events: res.data.items || [] };
+                const events = (res.data.items || []).map(compactEvent);
+                return { status: "success", count: events.length, events };
             } catch (err: any) {
                 console.error("[Calendar] Error listing events:", err.message);
                 return { status: "error", error: err.message };
@@ -71,7 +84,7 @@ export const calendarTools = {
                     },
                 });
                 console.log(`[Calendar] Added event: "${args.summary}" at ${args.startDateTime}`);
-                return { status: "success", event: res.data };
+                return { status: "success", message: `Added "${args.summary}"`, event: compactEvent(res.data) };
             } catch (err: any) {
                 console.error(`[Calendar] Failed to add event "${args.summary}":`, err.message);
                 return { status: "error", error: err.message };
