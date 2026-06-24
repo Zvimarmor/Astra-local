@@ -10,5 +10,12 @@ data/memory.db-wal
 data/media/**
 !data/media/whatsapp/.gitkeep
 data/whatsapp_auth/
+data/*.log
 *.pem
 auth_info_baileys/
+
+# Local OpenClaw config — holds the live Telegram bot token, never commit
+openclaw.json
+
+# Machine-specific symlinks into Homebrew node_modules
+plugin-skills/
