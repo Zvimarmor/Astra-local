@@ -109,6 +109,12 @@ db.exec(`
         UNIQUE(schedule_id, run_date)
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
     CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
@@ -744,4 +750,17 @@ export function updateScheduleTime(id: number, hour: number, minute: number, day
         ? db.prepare('UPDATE schedules SET hour = ?, minute = ?, days = ? WHERE id = ?').run(hour, minute, days, id)
         : db.prepare('UPDATE schedules SET hour = ?, minute = ? WHERE id = ?').run(hour, minute, id);
     return info.changes > 0;
+}
+
+// ─── Generic key/value settings (e.g. voice output mode) ─────────────────────
+export function getSetting(key: string, fallback: string = ''): string {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : fallback;
+}
+
+export function setSetting(key: string, value: string): void {
+    db.prepare(
+        'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ' +
+        'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP'
+    ).run(key, value);
 }

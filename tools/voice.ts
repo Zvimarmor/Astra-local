@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
 import { config } from './config';
+import { getSetting, setSetting } from './storage';
 
 /**
  * Voice Tools — Piper TTS (Local Text-to-Speech)
@@ -41,7 +43,127 @@ function cleanupOldTtsFiles(): void {
     }
 }
 
+// ─── Voice output (spoken replies) ───────────────────────────────────────────
+// Two modes, stored in the `settings` table under key `voice_mode`:
+//   'speakers' → play the reply aloud through the Mac Mini speakers (afplay)
+//   'telegram' → send the reply as a Telegram voice message (default)
+//   'off'      → no voice output (text only)
+const MAX_SPEAK_LENGTH = 1200;
+const VOICE_MODES = ['speakers', 'telegram', 'off'] as const;
+type VoiceMode = (typeof VOICE_MODES)[number];
+
+function getVoiceMode(): VoiceMode {
+    const m = getSetting('voice_mode', 'telegram');
+    return (VOICE_MODES as readonly string[]).includes(m) ? (m as VoiceMode) : 'telegram';
+}
+
+/** Run a binary with no shell (injection-safe). Resolves on exit 0. */
+function run(cmd: string, args: string[], timeoutMs = 30000): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const proc = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: timeoutMs });
+        let stderr = '';
+        proc.stderr.on('data', d => { stderr += d.toString(); });
+        proc.on('close', code => code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 200)}`)));
+        proc.on('error', reject);
+    });
+}
+
+/** Synthesize text to an AIFF file with macOS `say`. Hebrew → Carmit, else default. */
+async function synthSay(text: string, outAiff: string): Promise<void> {
+    const isHebrew = /[֐-׿]/.test(text);
+    const args = isHebrew ? ['-v', 'Carmit', '-o', outAiff, text] : ['-o', outAiff, text];
+    await run('say', args);
+}
+
+/** POST an OGG/Opus file to Telegram as a voice message (owner chat). */
+async function sendTelegramVoice(oggPath: string): Promise<void> {
+    const token = config.telegram.botToken;
+    const chatId = config.telegram.ownerChatId;
+    if (!token || !chatId) throw new Error('TELEGRAM_BOT_TOKEN / TELEGRAM_OWNER_CHAT_ID not configured');
+    const buf = fs.readFileSync(oggPath);
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('voice', new Blob([buf], { type: 'audio/ogg' }), 'reply.ogg');
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendVoice`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error(`Telegram sendVoice failed: ${res.status} ${await res.text()}`);
+}
+
 export const voiceTools = {
+    set_voice_mode: {
+        name: 'set_voice_mode',
+        description: "Set how Astra speaks replies aloud: 'speakers' (play on the Mac Mini speakers), 'telegram' (send a Telegram voice message), or 'off' (text only). Use when the user says things like 'speakers mode', 'reply with voice messages', or 'stop talking'.",
+        parameters: {
+            type: 'object',
+            properties: {
+                mode: { type: 'string', enum: ['speakers', 'telegram', 'off'], description: 'Voice output mode' }
+            },
+            required: ['mode']
+        },
+        execute: async (args: any) => {
+            const mode = String(args.mode || '').toLowerCase();
+            if (!(VOICE_MODES as readonly string[]).includes(mode)) {
+                return { status: 'error', error: `Invalid mode "${mode}". Use one of: speakers, telegram, off.` };
+            }
+            setSetting('voice_mode', mode);
+            const desc = mode === 'speakers' ? 'play aloud on the Mac Mini speakers'
+                : mode === 'telegram' ? 'reply with Telegram voice messages' : 'stay text-only';
+            return { status: 'success', mode, message: `Voice mode set to "${mode}" — I will ${desc}.` };
+        }
+    },
+
+    get_voice_mode: {
+        name: 'get_voice_mode',
+        description: 'Show the current voice output mode (speakers, telegram, or off).',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ status: 'success', mode: getVoiceMode() })
+    },
+
+    speak: {
+        name: 'speak',
+        description: "Speak a reply aloud using the current voice mode. If mode is 'speakers' it plays on the Mac Mini speakers; if 'telegram' it sends a Telegram voice message; if 'off' it does nothing. Call this with your answer text after the user sends a voice message or asks you to talk. Supports Hebrew and English.",
+        parameters: {
+            type: 'object',
+            properties: {
+                text: { type: 'string', description: 'The text to speak aloud (max 1200 chars).' }
+            },
+            required: ['text']
+        },
+        execute: async (args: any) => {
+            try {
+                const text = (args.text || '').trim();
+                if (!text) return { status: 'error', error: 'No text provided.' };
+                if (text.length > MAX_SPEAK_LENGTH) {
+                    return { status: 'error', error: `Text too long (${text.length} chars). Max ${MAX_SPEAK_LENGTH}.` };
+                }
+
+                const mode = getVoiceMode();
+                if (mode === 'off') return { status: 'success', spoken: false, mode, message: 'Voice output is off.' };
+
+                fs.mkdirSync(config.ttsOutputDir, { recursive: true });
+                const stamp = Date.now();
+                const aiff = path.join(config.ttsOutputDir, `say_${stamp}.aiff`);
+                await synthSay(text, aiff);
+
+                if (mode === 'speakers') {
+                    await run('afplay', [aiff]);
+                    fs.unlinkSync(aiff);
+                    return { status: 'success', spoken: true, mode, message: 'Played on the Mac Mini speakers.' };
+                }
+
+                // telegram voice message
+                const ogg = path.join(config.ttsOutputDir, `say_${stamp}.ogg`);
+                await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', aiff, '-c:a', 'libopus', '-b:a', '32k', '-ar', '48000', ogg]);
+                await sendTelegramVoice(ogg);
+                fs.unlinkSync(aiff);
+                fs.unlinkSync(ogg);
+                return { status: 'success', spoken: true, mode, message: 'Sent as a Telegram voice message.' };
+            } catch (err: any) {
+                console.error('[Voice] speak error:', err.message);
+                return { status: 'error', error: err.message };
+            }
+        }
+    },
+
     text_to_speech: {
         name: "text_to_speech",
         description: "Convert text to speech audio using the local Piper TTS engine. Returns the file path to the generated .wav audio file. Use this when the user asks you to 'read this', 'say this', or requests a voice response.",
