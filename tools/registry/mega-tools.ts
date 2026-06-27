@@ -14,6 +14,7 @@ import { emailDigestTools } from '../email-digest';
 import { voiceTools } from '../voice';
 import { immichTools } from '../immich';
 import { spotifyTools } from '../spotify';
+import { notesTools } from '../notes';
 
 /**
  * Mega-Tools — consolidated tool surface for the local 8B model.
@@ -66,6 +67,7 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, web search, daily status, text-to-speech', example: '"What time is it?" · "Search the web for…" · "What\'s my day look like?"' },
     manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
+    manage_notes: { category: '📥 Info & memory', blurb: 'second-brain notes vault (auto-linked)', example: '"Save a note: …" · "What notes do I have about X?"' },
 };
 const HELP_CATEGORY_ORDER = ['📋 Productivity', '💰 Money', '📥 Info & memory', '🎵 Media', '🧩 Other'];
 
@@ -381,6 +383,40 @@ export const megaTools = {
                 case 'list_alarms': return call(spotifyTools as DomainMap, 'spotify_list_alarms', {});
                 case 'cancel_alarm': return call(spotifyTools as DomainMap, 'spotify_cancel_alarm', { alarm_id: a.alarm_id });
                 default: return badAction(a.action, ['play', 'pause', 'next', 'previous', 'volume', 'now_playing', 'set_alarm', 'list_alarms', 'cancel_alarm']);
+            }
+        },
+    },
+
+    // ─── 10. Notes (second-brain Obsidian vault) ─────────────────────
+    manage_notes: {
+        name: 'manage_notes',
+        description:
+            "The user's second-brain notes (an Obsidian markdown vault). Choose action: " +
+            "'add' (save a note; needs title + content, optional tags — auto-links to related notes), " +
+            "'find' (search notes; needs query), 'list' (all note titles), " +
+            "'link' (connect two notes; needs from_title + to_title), " +
+            "'delete' (permanently remove a note; needs title — confirm with the user first).",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['add', 'find', 'list', 'link', 'delete'], description: 'Notes operation to perform' },
+                title: { type: 'string', description: 'Note title (for add / delete)' },
+                content: { type: 'string', description: 'Note body (for add)' },
+                tags: { type: 'string', description: "Optional comma-separated tags (for add)" },
+                query: { type: 'string', description: 'Search text (for find)' },
+                from_title: { type: 'string', description: 'Note to add a link into (for link)' },
+                to_title: { type: 'string', description: 'Note to link to (for link)' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'add': return call(notesTools as DomainMap, 'add_note', { title: a.title, content: a.content, tags: a.tags });
+                case 'find': return call(notesTools as DomainMap, 'find_notes', { query: a.query });
+                case 'list': return call(notesTools as DomainMap, 'list_notes', {});
+                case 'link': return call(notesTools as DomainMap, 'link_note', { from_title: a.from_title, to_title: a.to_title });
+                case 'delete': return call(notesTools as DomainMap, 'delete_note', { title: a.title });
+                default: return badAction(a.action, ['add', 'find', 'list', 'link', 'delete']);
             }
         },
     },

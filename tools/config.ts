@@ -59,6 +59,9 @@ export const config = {
     piperVoiceModel: process.env.PIPER_VOICE_MODEL || path.join(os.homedir(), 'piper-voices', 'en-us-amy-medium.onnx'),
     ttsOutputDir: path.join(PROJECT_ROOT, 'data', 'media', 'tts'),
 
+    // Second-brain notes vault — Obsidian-compatible markdown (.md with [[wikilinks]])
+    vaultDir: process.env.VAULT_DIR || path.join(PROJECT_ROOT, 'vault'),
+
     // Dashboard
     dashboardPort: parseInt(process.env.DASHBOARD_PORT || '3001', 10),
     dashboardToken: process.env.DASHBOARD_TOKEN || '',

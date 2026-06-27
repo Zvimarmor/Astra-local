@@ -22,3 +22,6 @@ plugin-skills/
 
 # Root-level Google service-account key (live private key)
 /service_account.json
+
+# Second-brain notes (private, not part of the code repo)
+vault/
