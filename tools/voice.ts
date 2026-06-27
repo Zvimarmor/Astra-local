@@ -3,6 +3,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { config } from './config';
 import { getSetting, setSetting } from './storage';
+import { isSpotifyPlaying } from './spotify';
 
 /**
  * Voice Tools — Piper TTS (Local Text-to-Speech)
@@ -145,6 +146,17 @@ export const voiceTools = {
                 await synthSay(text, aiff);
 
                 if (mode === 'speakers') {
+                    // Don't fight Spotify for the speakers/CoreAudio device: if music is
+                    // playing, afplay would both talk over it AND cause buffer-underrun
+                    // stutter. Deliver this reply as a Telegram voice message instead.
+                    if (await isSpotifyPlaying()) {
+                        const ogg = path.join(config.ttsOutputDir, `say_${stamp}.ogg`);
+                        await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', aiff, '-c:a', 'libopus', '-b:a', '32k', '-ar', '48000', ogg]);
+                        await sendTelegramVoice(ogg);
+                        fs.unlinkSync(aiff);
+                        fs.unlinkSync(ogg);
+                        return { status: 'success', spoken: true, mode, message: 'Music is playing — sent the reply as a Telegram voice message instead of talking over the speakers.' };
+                    }
                     await run('afplay', [aiff]);
                     fs.unlinkSync(aiff);
                     return { status: 'success', spoken: true, mode, message: 'Played on the Mac Mini speakers.' };
