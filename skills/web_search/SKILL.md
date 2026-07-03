@@ -6,7 +6,9 @@
 - User asks about weather in any city
 
 ## Tools Available
-- `assistant_utils(action="web_search", query)` — Search the web using SearXNG, DuckDuckGo, and Wikipedia. Weather queries are auto-routed to a weather source.
+- `web_search` — OpenClaw's native, provider-backed web search (currently DuckDuckGo). This
+  is a built-in capability, not one of Astra's `manage_*`/`assistant_utils` tools — call it
+  directly by name.
 
 ## Rules
 1. Always translate Hebrew queries to English before searching (the search engines work better in English).
@@ -16,6 +18,6 @@
 5. Always cite the source of the information.
 
 ## Examples
-- "What's the weather in Tel Aviv?" → `assistant_utils(action="web_search", query="weather Tel Aviv")`
-- "Who won the Champions League?" → `assistant_utils(action="web_search", query="Champions League winner 2026")`
-- "What is quantum computing?" → `assistant_utils(action="web_search", query="quantum computing explained")`
+- "What's the weather in Tel Aviv?" → `web_search(query="weather Tel Aviv")`
+- "Who won the Champions League?" → `web_search(query="Champions League winner 2026")`
+- "What is quantum computing?" → `web_search(query="quantum computing explained")`

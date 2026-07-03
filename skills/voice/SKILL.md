@@ -1,13 +1,13 @@
 # Voice In / Voice Out Skill
 
-Astra can listen to voice messages and answer out loud. Incoming Telegram voice
+Astra can listen to voice messages and answer out loud. Incoming WhatsApp voice
 notes are transcribed locally (Whisper) **before** you see them — you just
 receive the text. To answer *with voice*, call the `speak` helper.
 
 ## Voice output modes
-The output mode is stored and controlled by the user (default: `telegram`):
+The output mode is stored and controlled by the user (default: `whatsapp`):
 - **speakers** — the reply plays aloud on the Mac Mini speakers.
-- **telegram** — the reply is sent back as a Telegram voice message.
+- **whatsapp** — the reply is sent back as a WhatsApp voice message.
 - **off** — no voice; text only.
 
 ## When to speak the reply
@@ -26,7 +26,7 @@ If `speak` returns `mode: "off"`, just reply in text.
 - "Speakers mode" / "talk through the speakers" / "play it out loud here"
   → `assistant_utils(action="set_voice_mode", mode="speakers")`
 - "Reply with voice messages" / "send me voice notes" / "voice message mode"
-  → `assistant_utils(action="set_voice_mode", mode="telegram")`
+  → `assistant_utils(action="set_voice_mode", mode="whatsapp")`
 - "Stop talking" / "text only" / "turn off voice"
   → `assistant_utils(action="set_voice_mode", mode="off")`
 - "Which voice mode am I in?" → `assistant_utils(action="get_voice_mode")`

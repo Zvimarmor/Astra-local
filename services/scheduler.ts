@@ -6,7 +6,7 @@
  * │  The "heartbeat" the skills always referred to but that never     │
  * │  actually existed. A deterministic timer that, on schedule,       │
  * │  reads SQLite and pushes a pre-formatted message straight to       │
- * │  Telegram via the Bot API.                                         │
+ * │  WhatsApp via the OpenClaw gateway (`openclaw message send`).       │
  * │                                                                    │
  * │  ⛔ NO LLM in the loop — it cannot hallucinate "I sent it".       │
  * │  ⛔ Runs even if Ollama is cold/asleep.                           │
@@ -33,10 +33,11 @@ const storage = require(path.join(DIST, 'storage.js'));
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 
 const TZ: string = config.timezone;
-const BOT_TOKEN: string = config.telegram.botToken;
-const OWNER_CHAT_ID: string = config.telegram.ownerChatId;
+const WA_TARGET: string = config.whatsapp.ownerTarget;
 const TICK_MS = Math.max(15, config.scheduler.tickSeconds) * 1000;
 
 // ─── Time helpers (everything in the configured timezone) ─────────────
@@ -85,28 +86,16 @@ function inQuietHours(n: LocalNow): { quiet: boolean; reason: string } {
     return { quiet: false, reason: '' };
 }
 
-// ─── Telegram Bot API send ────────────────────────────────────────────
+// ─── WhatsApp send (via OpenClaw gateway CLI) ─────────────────────────
+// WhatsApp has no bot HTTP API, so we push through `openclaw message send`
+// (see dist/whatsapp-send.js), reusing the single linked WhatsApp session.
 
-async function sendTelegram(text: string): Promise<boolean> {
-    if (!BOT_TOKEN || !OWNER_CHAT_ID) {
-        console.error('[Scheduler] ⚠ TELEGRAM_BOT_TOKEN / TELEGRAM_OWNER_CHAT_ID not set — cannot send.');
+async function sendWhatsApp(text: string): Promise<boolean> {
+    if (!WA_TARGET) {
+        console.error('[Scheduler] ⚠ WHATSAPP_OWNER_TARGET not set — cannot send.');
         return false;
     }
-    try {
-        const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: OWNER_CHAT_ID, text, disable_web_page_preview: true }),
-        });
-        if (!res.ok) {
-            console.error(`[Scheduler] Telegram send failed: HTTP ${res.status} ${await res.text()}`);
-            return false;
-        }
-        return true;
-    } catch (err: any) {
-        console.error('[Scheduler] Telegram send error:', err.message);
-        return false;
-    }
+    return sendWhatsAppText(text);
 }
 
 // ─── Optional LLM phrasing (analytical jobs only) ─────────────────────
@@ -121,7 +110,7 @@ const PHRASE_TIMEOUT_MS = 30000;
 
 const PHRASE_SYSTEM =
     'You are Astra, a warm personal assistant. Rewrite the draft summary so it reads ' +
-    'naturally and encouragingly as a Telegram message. Rules: keep it concise; KEEP ' +
+    'naturally and encouragingly as a WhatsApp message. Rules: keep it concise; KEEP ' +
     'EVERY NUMBER, NAME, CATEGORY AND EMOJI EXACTLY as given; never invent, add, or drop ' +
     'a fact; no preamble or sign-off of your own — output only the message text.';
 
@@ -385,7 +374,7 @@ async function tick(): Promise<void> {
                 // recurring_gen is the only job that suppresses its notification during quiet.
                 const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
                 if (message && !suppressNotify) {
-                    const ok = await sendTelegram(message);
+                    const ok = await sendWhatsApp(message);
                     finalStatus = ok ? 'sent' : 'error';
                 } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
@@ -408,7 +397,7 @@ console.log('╔═════════════════════�
 console.log('║  Astra Proactive Scheduler (deterministic)       ║');
 console.log('╚══════════════════════════════════════════════════╝');
 console.log(`[Scheduler] Timezone: ${TZ} | tick: ${TICK_MS / 1000}s`);
-console.log(`[Scheduler] Telegram: ${BOT_TOKEN ? 'token set' : 'NO TOKEN'} | owner: ${OWNER_CHAT_ID || 'NOT SET'}`);
+console.log(`[Scheduler] WhatsApp: ${WA_TARGET ? 'target set' : 'NO TARGET'} → ${WA_TARGET || 'NOT SET'}`);
 const sList = storage.getSchedules();
 console.log(`[Scheduler] ${sList.length} schedule(s): ${sList.map((s: any) => `${s.job}@${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`).join(', ')}`);
 

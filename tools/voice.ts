@@ -3,6 +3,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { config } from './config';
 import { getSetting, setSetting } from './storage';
+import { sendWhatsAppMedia } from './whatsapp-send';
 
 /**
  * Voice Tools — Piper TTS (Local Text-to-Speech)
@@ -44,17 +45,18 @@ function cleanupOldTtsFiles(): void {
 }
 
 // ─── Voice output (spoken replies) ───────────────────────────────────────────
-// Two modes, stored in the `settings` table under key `voice_mode`:
+// Modes stored in the `settings` table under key `voice_mode`:
 //   'speakers' → play the reply aloud through the Mac Mini speakers (afplay)
-//   'telegram' → send the reply as a Telegram voice message (default)
+//   'whatsapp' → send the reply as a WhatsApp voice/audio message (default)
 //   'off'      → no voice output (text only)
 const MAX_SPEAK_LENGTH = 1200;
-const VOICE_MODES = ['speakers', 'telegram', 'off'] as const;
+const VOICE_MODES = ['speakers', 'whatsapp', 'off'] as const;
 type VoiceMode = (typeof VOICE_MODES)[number];
 
 function getVoiceMode(): VoiceMode {
-    const m = getSetting('voice_mode', 'telegram');
-    return (VOICE_MODES as readonly string[]).includes(m) ? (m as VoiceMode) : 'telegram';
+    let m = getSetting('voice_mode', 'whatsapp');
+    if (m === 'telegram') m = 'whatsapp'; // legacy stored value → renamed mode
+    return (VOICE_MODES as readonly string[]).includes(m) ? (m as VoiceMode) : 'whatsapp';
 }
 
 /** Run a binary with no shell (injection-safe). Resolves on exit 0. */
@@ -75,52 +77,45 @@ async function synthSay(text: string, outAiff: string): Promise<void> {
     await run('say', args);
 }
 
-/** POST an OGG/Opus file to Telegram as a voice message (owner chat). */
-async function sendTelegramVoice(oggPath: string): Promise<void> {
-    const token = config.telegram.botToken;
-    const chatId = config.telegram.ownerChatId;
-    if (!token || !chatId) throw new Error('TELEGRAM_BOT_TOKEN / TELEGRAM_OWNER_CHAT_ID not configured');
-    const buf = fs.readFileSync(oggPath);
-    const form = new FormData();
-    form.append('chat_id', chatId);
-    form.append('voice', new Blob([buf], { type: 'audio/ogg' }), 'reply.ogg');
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendVoice`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`Telegram sendVoice failed: ${res.status} ${await res.text()}`);
+/** Send an OGG/Opus voice reply to the owner over WhatsApp (via OpenClaw gateway). */
+async function sendWhatsAppVoice(oggPath: string): Promise<void> {
+    const ok = await sendWhatsAppMedia(oggPath);
+    if (!ok) throw new Error('WhatsApp voice send failed — check WHATSAPP_OWNER_TARGET and the gateway');
 }
 
 export const voiceTools = {
     set_voice_mode: {
         name: 'set_voice_mode',
-        description: "Set how Astra speaks replies aloud: 'speakers' (play on the Mac Mini speakers), 'telegram' (send a Telegram voice message), or 'off' (text only). Use when the user says things like 'speakers mode', 'reply with voice messages', or 'stop talking'.",
+        description: "Set how Astra speaks replies aloud: 'speakers' (play on the Mac Mini speakers), 'whatsapp' (send a WhatsApp voice message), or 'off' (text only). Use when the user says things like 'speakers mode', 'reply with voice messages', or 'stop talking'.",
         parameters: {
             type: 'object',
             properties: {
-                mode: { type: 'string', enum: ['speakers', 'telegram', 'off'], description: 'Voice output mode' }
+                mode: { type: 'string', enum: ['speakers', 'whatsapp', 'off'], description: 'Voice output mode' }
             },
             required: ['mode']
         },
         execute: async (args: any) => {
             const mode = String(args.mode || '').toLowerCase();
             if (!(VOICE_MODES as readonly string[]).includes(mode)) {
-                return { status: 'error', error: `Invalid mode "${mode}". Use one of: speakers, telegram, off.` };
+                return { status: 'error', error: `Invalid mode "${mode}". Use one of: speakers, whatsapp, off.` };
             }
             setSetting('voice_mode', mode);
             const desc = mode === 'speakers' ? 'play aloud on the Mac Mini speakers'
-                : mode === 'telegram' ? 'reply with Telegram voice messages' : 'stay text-only';
+                : mode === 'whatsapp' ? 'reply with WhatsApp voice messages' : 'stay text-only';
             return { status: 'success', mode, message: `Voice mode set to "${mode}" — I will ${desc}.` };
         }
     },
 
     get_voice_mode: {
         name: 'get_voice_mode',
-        description: 'Show the current voice output mode (speakers, telegram, or off).',
+        description: 'Show the current voice output mode (speakers, whatsapp, or off).',
         parameters: { type: 'object', properties: {} },
         execute: async () => ({ status: 'success', mode: getVoiceMode() })
     },
 
     speak: {
         name: 'speak',
-        description: "Speak a reply aloud using the current voice mode. If mode is 'speakers' it plays on the Mac Mini speakers; if 'telegram' it sends a Telegram voice message; if 'off' it does nothing. Call this with your answer text after the user sends a voice message or asks you to talk. Supports Hebrew and English.",
+        description: "Speak a reply aloud using the current voice mode. If mode is 'speakers' it plays on the Mac Mini speakers; if 'whatsapp' it sends a WhatsApp voice message; if 'off' it does nothing. Call this with your answer text after the user sends a voice message or asks you to talk. Supports Hebrew and English.",
         parameters: {
             type: 'object',
             properties: {
@@ -150,13 +145,13 @@ export const voiceTools = {
                     return { status: 'success', spoken: true, mode, message: 'Played on the Mac Mini speakers.' };
                 }
 
-                // telegram voice message
+                // whatsapp voice message
                 const ogg = path.join(config.ttsOutputDir, `say_${stamp}.ogg`);
                 await run('ffmpeg', ['-y', '-loglevel', 'error', '-i', aiff, '-c:a', 'libopus', '-b:a', '32k', '-ar', '48000', ogg]);
-                await sendTelegramVoice(ogg);
+                await sendWhatsAppVoice(ogg);
                 fs.unlinkSync(aiff);
                 fs.unlinkSync(ogg);
-                return { status: 'success', spoken: true, mode, message: 'Sent as a Telegram voice message.' };
+                return { status: 'success', spoken: true, mode, message: 'Sent as a WhatsApp voice message.' };
             } catch (err: any) {
                 console.error('[Voice] speak error:', err.message);
                 return { status: 'error', error: err.message };

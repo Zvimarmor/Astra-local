@@ -79,9 +79,22 @@ export const config = {
         deviceName: process.env.SPOTIFY_DEVICE_NAME || 'Astra_Mac_Mini',
     },
 
-    // Telegram (proactive scheduler → Bot API sendMessage to the owner)
-    // Token currently also lives in ~/.openclaw/openclaw.json; keep a copy in .env
-    // so the standalone scheduler service can push without going through OpenClaw.
+    // WhatsApp (PRIMARY channel). Proactive scheduler + voice replies send via the
+    // OpenClaw gateway CLI (`openclaw message send --channel whatsapp`), which reuses
+    // the single linked WhatsApp session — WhatsApp has no bot HTTP API of its own.
+    whatsapp: {
+        // Where proactive/voice messages are delivered — your personal number, E.164 (e.g. +9725...).
+        ownerTarget: (process.env.WHATSAPP_OWNER_TARGET || '').trim(),
+        // Astra's own linked WhatsApp number (the dedicated SIM), E.164 — informational only.
+        selfNumber: (process.env.WHATSAPP_SELF_NUMBER || '').trim(),
+        // OpenClaw channel account id (see `openclaw channels list`).
+        account: (process.env.WHATSAPP_ACCOUNT || 'default').trim(),
+        // Absolute path to the openclaw CLI — launchd's PATH usually omits /opt/homebrew/bin.
+        openclawBin: (process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw').trim(),
+    },
+
+    // Telegram (LEGACY fallback). Kept for easy revert; no longer the active channel.
+    // Token also lives in ~/.openclaw/openclaw.json.
     telegram: {
         botToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
         ownerChatId: (process.env.TELEGRAM_OWNER_CHAT_ID || '').trim(),
