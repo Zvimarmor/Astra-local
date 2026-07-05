@@ -35,6 +35,8 @@ const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
 const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { getCalendarClient } = require(path.join(DIST, 'google-auth.js'));
 
 const TZ: string = config.timezone;
 const WA_TARGET: string = config.whatsapp.ownerTarget;
@@ -146,13 +148,45 @@ async function phraseWithLLM(draft: string): Promise<string> {
 
 const NIS = (n: number) => `${Math.round(n)} NIS`;
 
-function buildMorningBriefing(dateStr: string): string {
+/** Fetch a compact list of the given day's Google Calendar events. Never throws — returns [] on any failure. */
+async function getDayEvents(dateStr: string): Promise<Array<{ title: string; start: string; all_day: boolean }>> {
+    try {
+        const calendar = getCalendarClient();
+        const timeMin = new Date(`${dateStr}T00:00:00`).toISOString();
+        const timeMax = new Date(`${dateStr}T23:59:59`).toISOString();
+        const res = await calendar.events.list({
+            calendarId: config.calendarId,
+            timeMin, timeMax, timeZone: TZ,
+            maxResults: 20, singleEvents: true, orderBy: 'startTime',
+        });
+        return (res.data.items || []).map((e: any) => ({
+            title: e.summary || '(no title)',
+            start: e.start?.dateTime || e.start?.date || '',
+            all_day: Boolean(e.start?.date && !e.start?.dateTime),
+        }));
+    } catch (err: any) {
+        console.error('[Scheduler] Calendar fetch failed:', err.message);
+        return [];
+    }
+}
+
+function formatEventTime(iso: string, allDay: boolean): string {
+    if (allDay) return 'All day';
+    return new Date(iso).toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+}
+
+async function buildMorningBriefing(dateStr: string): Promise<string> {
     const status = { pending_tasks: storage.getPendingTasks(), uncompleted_habits: [] as any[] };
     const habits = storage.getHabits().filter((h: any) => h.last_logged_date !== dateStr);
     const fin = storage.getFinancialOverview('month');
     const alerts = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
 
     const lines: string[] = [`☀️ Good morning! Daily Summary — ${dateStr}`, ''];
+
+    const events = await getDayEvents(dateStr);
+    lines.push(`📅 Today's Agenda (${events.length}):`);
+    if (events.length === 0) lines.push('  Nothing on the calendar today.');
+    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
 
     const tasks = status.pending_tasks;
     lines.push(`✅ Pending Tasks (${tasks.length}):`);
@@ -186,15 +220,24 @@ function buildMorningBriefing(dateStr: string): string {
     return lines.join('\n');
 }
 
-function buildEveningReview(dateStr: string): string {
+async function buildEveningReview(dateStr: string): Promise<string> {
     const today = storage.getExpenseSummary('week'); // weekly bucket; today's slice below
     const week = today.total;
     const fin = storage.getFinancialOverview('month');
     const tasks = storage.getPendingTasks();
     const recurringCount = storage.getActiveRecurringTasks().length;
 
+    const tomorrow = new Date(`${dateStr}T12:00:00`);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toLocaleDateString('sv-SE', { timeZone: TZ });
+    const events = await getDayEvents(tomorrowStr);
+
     const lines: string[] = [`🌙 Good evening! Evening Summary — ${dateStr}`, ''];
-    lines.push(`📊 This week's expenses: ${NIS(week)}`);
+    lines.push(`📅 Tomorrow's Agenda (${events.length}):`);
+    if (events.length === 0) lines.push('  Nothing on the calendar yet.');
+    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
+
+    lines.push('', `📊 This week's expenses: ${NIS(week)}`);
     if (fin.total_income > 0 || fin.total_expenses > 0) {
         const sign = fin.net >= 0 ? '+' : '';
         lines.push(`💰 Month net so far: ${sign}${NIS(fin.net)}`);
@@ -305,9 +348,9 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 Generated ${count} recurring task${count === 1 ? '' : 's'} for today.` : null };
         }
         case 'morning_briefing':
-            return { status: 'sent', message: buildMorningBriefing(n.dateStr) };
+            return { status: 'sent', message: await buildMorningBriefing(n.dateStr) };
         case 'evening_review':
-            return { status: 'sent', message: buildEveningReview(n.dateStr) };
+            return { status: 'sent', message: await buildEveningReview(n.dateStr) };
         case 'budget_check': {
             const msg = buildBudgetAlert();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
