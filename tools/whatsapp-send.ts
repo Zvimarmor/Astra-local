@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import path from 'path';
 import { config } from './config';
 
 /**
@@ -17,9 +18,29 @@ import { config } from './config';
 
 const SEND_TIMEOUT_MS = 30000;
 
+/**
+ * PATH for the spawned openclaw process. The `openclaw` CLI is a
+ * `#!/usr/bin/env node` script, so `env` must be able to find `node` on PATH.
+ * Under launchd (the scheduler service) the inherited PATH is minimal
+ * (/usr/bin:/bin:…) and omits Homebrew's /opt/homebrew/bin, so `env node` fails
+ * with "env: node: No such file or directory" and every send silently fails —
+ * which is exactly what broke the daily briefings after the Telegram→WhatsApp
+ * migration (Telegram sent via fetch(), needing no subprocess). We prepend the
+ * directory of the node binary currently running THIS process (process.execPath),
+ * which is guaranteed to contain a working node and, for a Homebrew install, the
+ * openclaw symlink too.
+ */
+const SEND_PATH = [
+    path.dirname(process.execPath),
+    process.env.PATH || '',
+].filter(Boolean).join(path.delimiter);
+
 function ocSend(args: string[]): Promise<boolean> {
     return new Promise((resolve) => {
-        execFile(config.whatsapp.openclawBin, args, { timeout: SEND_TIMEOUT_MS }, (err, _stdout, stderr) => {
+        execFile(config.whatsapp.openclawBin, args, {
+            timeout: SEND_TIMEOUT_MS,
+            env: { ...process.env, PATH: SEND_PATH },
+        }, (err, _stdout, stderr) => {
             if (err) {
                 console.error('[WhatsApp] send failed:', String(stderr || err.message || '').slice(0, 300));
                 resolve(false);
