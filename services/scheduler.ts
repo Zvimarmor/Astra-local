@@ -31,8 +31,9 @@ const { config } = require(path.join(DIST, 'config.js'));
 const storage = require(path.join(DIST, 'storage.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
+// spotifyd decommissioned 2026-07-06 — music_alarm handling disabled below.
+// Re-enable: uncomment this require + the 'music_alarm' case, bring spotifyd up.
+// const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -100,49 +101,16 @@ async function sendWhatsApp(text: string): Promise<boolean> {
     return sendWhatsAppText(text);
 }
 
-// ─── Optional LLM phrasing (analytical jobs only) ─────────────────────
-// The numbers ALWAYS come from SQLite. The local model is used ONLY to reword a
-// pre-built deterministic draft more warmly. On ANY failure (Ollama cold/down,
-// timeout, HTTP error, empty/short output) we return the exact deterministic text
-// and still send. The LLM never gates a send and never supplies a fact — this
-// preserves the scheduler's no-hallucination guarantee.
-const OLLAMA_URL: string = config.ollamaBaseUrl;
-const OLLAMA_MODEL: string = config.ollamaModel;
-const PHRASE_TIMEOUT_MS = 30000;
-
-const PHRASE_SYSTEM =
-    'You are Astra, a warm personal assistant. Rewrite the draft summary so it reads ' +
-    'naturally and encouragingly as a WhatsApp message. Rules: keep it concise; KEEP ' +
-    'EVERY NUMBER, NAME, CATEGORY AND EMOJI EXACTLY as given; never invent, add, or drop ' +
-    'a fact; no preamble or sign-off of your own — output only the message text.';
-
-async function phraseWithLLM(draft: string): Promise<string> {
-    try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), PHRASE_TIMEOUT_MS);
-        const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: ctrl.signal,
-            body: JSON.stringify({
-                model: OLLAMA_MODEL,
-                stream: false,
-                think: false,
-                options: { temperature: 0.4 },
-                messages: [
-                    { role: 'system', content: PHRASE_SYSTEM },
-                    { role: 'user', content: draft },
-                ],
-            }),
-        }).finally(() => clearTimeout(timer));
-        if (!res.ok) return draft;
-        const data: any = await res.json();
-        const text = String(data?.message?.content || '').trim();
-        return text.length >= 10 ? text : draft; // guard against empty/garbage
-    } catch {
-        return draft; // Ollama cold or unreachable → deterministic draft, still sends
-    }
-}
+// ─── Analytical jobs are now FULLY deterministic (2026-07-06) ─────────
+// The weekly recap & monthly finance review used to pass their SQLite-built
+// draft through a qwen3 "reword it warmly" call. That call shares Ollama's
+// single KV slot with the interactive gateway, so it EVICTED the cached system-
+// prompt prefix — making the user's next chat a ~35s cold-prefill turn. The
+// phrasing was cosmetic (numbers always came from SQLite, and any LLM failure
+// already fell back to the exact draft), so we dropped it entirely: the draft
+// IS the message now. This removes a recurring, self-inflicted chat slowdown.
+// To RE-ENABLE warmer phrasing without the cache hit, give Ollama a second slot
+// (OLLAMA_NUM_PARALLEL≥2) and restore phraseWithLLM from git history.
 
 // ─── Deterministic message builders (reuse storage content fns) ───────
 
@@ -303,7 +271,7 @@ async function buildWeeklyRecap(dateStr: string): Promise<string> {
     if (recurringCount > 0) lines.push(`🔄 Active recurring templates: ${recurringCount}`);
     lines.push('', "Here's to a strong week ahead! 💪");
 
-    return phraseWithLLM(lines.join('\n')); // draft is authoritative; LLM only rewords
+    return lines.join('\n'); // deterministic: the SQLite-built draft IS the message
 }
 
 async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null> {
@@ -336,7 +304,7 @@ async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null
     }
     lines.push('', 'New month, fresh start. 🚀');
 
-    return phraseWithLLM(lines.join('\n'));
+    return lines.join('\n'); // deterministic: the SQLite-built draft IS the message
 }
 
 // ─── Job dispatch. Returns { status, message } ────────────────────────
@@ -359,10 +327,12 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             const msg = await buildEmailDigest();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
         }
+        /* music_alarm disabled 2026-07-06 (spotifyd decommissioned). Re-enable
+           with the ../spotify require above.
         case 'music_alarm': {
             // payload carries {query,type}; play it via the compiled spotify tool.
             let p: any = {};
-            try { p = JSON.parse(s.payload || '{}'); } catch { /* ignore */ }
+            try { p = JSON.parse(s.payload || '{}'); } catch { }
             if (!p.query) return { status: 'error', message: '⚠️ Music alarm has no query.' };
             const res = await spotifyTools.spotify_play.execute({ query: p.query, type: p.type || 'track' });
             if (res && res.status === 'success') {
@@ -370,6 +340,7 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             }
             return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
         }
+        */
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
         case 'monthly_finance_review': {
