@@ -6,7 +6,7 @@
  * │  The "heartbeat" the skills always referred to but that never     │
  * │  actually existed. A deterministic timer that, on schedule,       │
  * │  reads SQLite and pushes a pre-formatted message straight to       │
- * │  Telegram via the Bot API.                                         │
+ * │  WhatsApp via the OpenClaw gateway (`openclaw message send`).       │
  * │                                                                    │
  * │  ⛔ NO LLM in the loop — it cannot hallucinate "I sent it".       │
  * │  ⛔ Runs even if Ollama is cold/asleep.                           │
@@ -33,10 +33,13 @@ const storage = require(path.join(DIST, 'storage.js'));
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { getCalendarClient } = require(path.join(DIST, 'google-auth.js'));
 
 const TZ: string = config.timezone;
-const BOT_TOKEN: string = config.telegram.botToken;
-const OWNER_CHAT_ID: string = config.telegram.ownerChatId;
+const WA_TARGET: string = config.whatsapp.ownerTarget;
 const TICK_MS = Math.max(15, config.scheduler.tickSeconds) * 1000;
 
 // ─── Time helpers (everything in the configured timezone) ─────────────
@@ -85,28 +88,16 @@ function inQuietHours(n: LocalNow): { quiet: boolean; reason: string } {
     return { quiet: false, reason: '' };
 }
 
-// ─── Telegram Bot API send ────────────────────────────────────────────
+// ─── WhatsApp send (via OpenClaw gateway CLI) ─────────────────────────
+// WhatsApp has no bot HTTP API, so we push through `openclaw message send`
+// (see dist/whatsapp-send.js), reusing the single linked WhatsApp session.
 
-async function sendTelegram(text: string): Promise<boolean> {
-    if (!BOT_TOKEN || !OWNER_CHAT_ID) {
-        console.error('[Scheduler] ⚠ TELEGRAM_BOT_TOKEN / TELEGRAM_OWNER_CHAT_ID not set — cannot send.');
+async function sendWhatsApp(text: string): Promise<boolean> {
+    if (!WA_TARGET) {
+        console.error('[Scheduler] ⚠ WHATSAPP_OWNER_TARGET not set — cannot send.');
         return false;
     }
-    try {
-        const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: OWNER_CHAT_ID, text, disable_web_page_preview: true }),
-        });
-        if (!res.ok) {
-            console.error(`[Scheduler] Telegram send failed: HTTP ${res.status} ${await res.text()}`);
-            return false;
-        }
-        return true;
-    } catch (err: any) {
-        console.error('[Scheduler] Telegram send error:', err.message);
-        return false;
-    }
+    return sendWhatsAppText(text);
 }
 
 // ─── Optional LLM phrasing (analytical jobs only) ─────────────────────
@@ -121,7 +112,7 @@ const PHRASE_TIMEOUT_MS = 30000;
 
 const PHRASE_SYSTEM =
     'You are Astra, a warm personal assistant. Rewrite the draft summary so it reads ' +
-    'naturally and encouragingly as a Telegram message. Rules: keep it concise; KEEP ' +
+    'naturally and encouragingly as a WhatsApp message. Rules: keep it concise; KEEP ' +
     'EVERY NUMBER, NAME, CATEGORY AND EMOJI EXACTLY as given; never invent, add, or drop ' +
     'a fact; no preamble or sign-off of your own — output only the message text.';
 
@@ -157,13 +148,45 @@ async function phraseWithLLM(draft: string): Promise<string> {
 
 const NIS = (n: number) => `${Math.round(n)} NIS`;
 
-function buildMorningBriefing(dateStr: string): string {
+/** Fetch a compact list of the given day's Google Calendar events. Never throws — returns [] on any failure. */
+async function getDayEvents(dateStr: string): Promise<Array<{ title: string; start: string; all_day: boolean }>> {
+    try {
+        const calendar = getCalendarClient();
+        const timeMin = new Date(`${dateStr}T00:00:00`).toISOString();
+        const timeMax = new Date(`${dateStr}T23:59:59`).toISOString();
+        const res = await calendar.events.list({
+            calendarId: config.calendarId,
+            timeMin, timeMax, timeZone: TZ,
+            maxResults: 20, singleEvents: true, orderBy: 'startTime',
+        });
+        return (res.data.items || []).map((e: any) => ({
+            title: e.summary || '(no title)',
+            start: e.start?.dateTime || e.start?.date || '',
+            all_day: Boolean(e.start?.date && !e.start?.dateTime),
+        }));
+    } catch (err: any) {
+        console.error('[Scheduler] Calendar fetch failed:', err.message);
+        return [];
+    }
+}
+
+function formatEventTime(iso: string, allDay: boolean): string {
+    if (allDay) return 'All day';
+    return new Date(iso).toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+}
+
+async function buildMorningBriefing(dateStr: string): Promise<string> {
     const status = { pending_tasks: storage.getPendingTasks(), uncompleted_habits: [] as any[] };
     const habits = storage.getHabits().filter((h: any) => h.last_logged_date !== dateStr);
     const fin = storage.getFinancialOverview('month');
     const alerts = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
 
     const lines: string[] = [`☀️ Good morning! Daily Summary — ${dateStr}`, ''];
+
+    const events = await getDayEvents(dateStr);
+    lines.push(`📅 Today's Agenda (${events.length}):`);
+    if (events.length === 0) lines.push('  Nothing on the calendar today.');
+    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
 
     const tasks = status.pending_tasks;
     lines.push(`✅ Pending Tasks (${tasks.length}):`);
@@ -197,15 +220,24 @@ function buildMorningBriefing(dateStr: string): string {
     return lines.join('\n');
 }
 
-function buildEveningReview(dateStr: string): string {
+async function buildEveningReview(dateStr: string): Promise<string> {
     const today = storage.getExpenseSummary('week'); // weekly bucket; today's slice below
     const week = today.total;
     const fin = storage.getFinancialOverview('month');
     const tasks = storage.getPendingTasks();
     const recurringCount = storage.getActiveRecurringTasks().length;
 
+    const tomorrow = new Date(`${dateStr}T12:00:00`);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toLocaleDateString('sv-SE', { timeZone: TZ });
+    const events = await getDayEvents(tomorrowStr);
+
     const lines: string[] = [`🌙 Good evening! Evening Summary — ${dateStr}`, ''];
-    lines.push(`📊 This week's expenses: ${NIS(week)}`);
+    lines.push(`📅 Tomorrow's Agenda (${events.length}):`);
+    if (events.length === 0) lines.push('  Nothing on the calendar yet.');
+    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
+
+    lines.push('', `📊 This week's expenses: ${NIS(week)}`);
     if (fin.total_income > 0 || fin.total_expenses > 0) {
         const sign = fin.net >= 0 ? '+' : '';
         lines.push(`💰 Month net so far: ${sign}${NIS(fin.net)}`);
@@ -316,9 +348,9 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 Generated ${count} recurring task${count === 1 ? '' : 's'} for today.` : null };
         }
         case 'morning_briefing':
-            return { status: 'sent', message: buildMorningBriefing(n.dateStr) };
+            return { status: 'sent', message: await buildMorningBriefing(n.dateStr) };
         case 'evening_review':
-            return { status: 'sent', message: buildEveningReview(n.dateStr) };
+            return { status: 'sent', message: await buildEveningReview(n.dateStr) };
         case 'budget_check': {
             const msg = buildBudgetAlert();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
@@ -385,7 +417,7 @@ async function tick(): Promise<void> {
                 // recurring_gen is the only job that suppresses its notification during quiet.
                 const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
                 if (message && !suppressNotify) {
-                    const ok = await sendTelegram(message);
+                    const ok = await sendWhatsApp(message);
                     finalStatus = ok ? 'sent' : 'error';
                 } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
@@ -408,7 +440,7 @@ console.log('╔═════════════════════�
 console.log('║  Astra Proactive Scheduler (deterministic)       ║');
 console.log('╚══════════════════════════════════════════════════╝');
 console.log(`[Scheduler] Timezone: ${TZ} | tick: ${TICK_MS / 1000}s`);
-console.log(`[Scheduler] Telegram: ${BOT_TOKEN ? 'token set' : 'NO TOKEN'} | owner: ${OWNER_CHAT_ID || 'NOT SET'}`);
+console.log(`[Scheduler] WhatsApp: ${WA_TARGET ? 'target set' : 'NO TARGET'} → ${WA_TARGET || 'NOT SET'}`);
 const sList = storage.getSchedules();
 console.log(`[Scheduler] ${sList.length} schedule(s): ${sList.map((s: any) => `${s.job}@${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`).join(', ')}`);
 
