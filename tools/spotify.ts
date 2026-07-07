@@ -76,6 +76,17 @@ async function api(endpoint: string, opts: { method?: string; body?: any } = {})
     return data;
 }
 
+/** Best-effort check: is Spotify actively playing right now? Never throws. */
+export async function isSpotifyPlaying(): Promise<boolean> {
+    try {
+        if (!isConfigured()) return false;
+        const data = await api('/me/player');
+        return Boolean(data && data.is_playing);
+    } catch {
+        return false;
+    }
+}
+
 /** Resolve the configured spotifyd device id (so playback targets the Mac). */
 async function resolveDeviceId(): Promise<{ id?: string; warning?: string }> {
     const name = config.spotify.deviceName;
