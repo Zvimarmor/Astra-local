@@ -8,12 +8,21 @@ import { habitTools } from '../habits';
 import { dailyStatusTools } from '../daily-status';
 import { memoryTools } from '../memory';
 import { whatsappMediaTools } from '../whatsapp-media';
-import { emailTools } from '../email';
-import { emailDigestTools } from '../email-digest';
 import { voiceTools } from '../voice';
-import { immichTools } from '../immich';
-import { spotifyTools } from '../spotify';
 import { notesTools } from '../notes';
+// ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
+//     (faster cold-prefill on the local 8B model). The domain tool logic is
+//     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
+//     the chat routing below is switched off. To RE-ENABLE: uncomment these
+//     imports, the matching HELP_META entries, and the manage_email /
+//     manage_photos / manage_music blocks, then `npm run build` + restore the
+//     matching skills. The 17:00 email digest + any music_alarm scheduler jobs
+//     do NOT use these wrappers (they require() the compiled dist directly), so
+//     they are unaffected by this trim.
+// import { emailTools } from '../email';
+// import { emailDigestTools } from '../email-digest';
+// import { immichTools } from '../immich';
+// import { spotifyTools } from '../spotify';
 
 /**
  * Mega-Tools — consolidated tool surface for the local 8B model.
@@ -61,12 +70,13 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
-    manage_email: { category: '📥 Info & memory', blurb: 'read your inbox (can\'t send)', example: '"Any new emails?" · "Read email 12"' },
-    manage_photos: { category: '📥 Info & memory', blurb: 'Immich photo search & albums', example: '"Find beach photos" · "Make an album called Trip 2026"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
-    manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
     manage_notes: { category: '📥 Info & memory', blurb: 'second-brain notes vault (auto-linked)', example: '"Save a note: …" · "What notes do I have about X?"' },
+    // DISABLED 2026-07-06 (re-enable with the matching tool blocks below):
+    // manage_email: { category: '📥 Info & memory', blurb: 'read your inbox (can\'t send)', example: '"Any new emails?" · "Read email 12"' },
+    // manage_photos: { category: '📥 Info & memory', blurb: 'Immich photo search & albums', example: '"Find beach photos" · "Make an album called Trip 2026"' },
+    // manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
 };
 const HELP_CATEGORY_ORDER = ['📋 Productivity', '💰 Money', '📥 Info & memory', '🎵 Media', '🧩 Other'];
 
@@ -221,6 +231,12 @@ export const megaTools = {
         },
     },
 
+    /* ─── DISABLED 2026-07-06 (speed trim) — manage_email & manage_photos ───
+       Removed from the chat surface to shrink the system prompt. The domain
+       logic is untouched in ../email, ../email-digest and ../immich. To
+       RE-ENABLE: uncomment the imports + HELP_META entries above and this
+       block, then `npm run build` and restore the photo_management skill.
+
     // ─── 5. Email (read-only IMAP) ───────────────────────────────────
     manage_email: {
         name: 'manage_email',
@@ -281,8 +297,9 @@ export const megaTools = {
             }
         },
     },
+    ─── end disabled block ─── */
 
-    // ─── 7. Memory (approval-based facts) ────────────────────────────
+    // ─── Memory (approval-based facts) ───────────────────────────────
     manage_memory: {
         name: 'manage_memory',
         description:
@@ -348,6 +365,13 @@ export const megaTools = {
         },
     },
 
+    /* ─── DISABLED 2026-07-06 (speed trim) — manage_music ──────────────────
+       Removed from the chat surface; spotifyd is being decommissioned on the
+       Mac Mini (music handled from the phone). Domain logic intact in
+       ../spotify. To RE-ENABLE: uncomment the ../spotify import + HELP_META
+       entry above and this block, `npm run build`, restore the spotify skill,
+       and bring spotifyd back up (launchctl bootstrap).
+
     // ─── 9. Music (Spotify → spotifyd on the Mac) ────────────────────
     manage_music: {
         name: 'manage_music',
@@ -384,8 +408,9 @@ export const megaTools = {
             }
         },
     },
+    ─── end disabled block ─── */
 
-    // ─── 10. Notes (second-brain Obsidian vault) ─────────────────────
+    // ─── Notes (second-brain Obsidian vault) ─────────────────────────
     manage_notes: {
         name: 'manage_notes',
         description:
