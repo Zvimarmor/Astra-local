@@ -93,12 +93,27 @@ export const config = {
         openclawBin: (process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw').trim(),
     },
 
-    // Telegram (LEGACY fallback). Kept for easy revert; no longer the active channel.
+    // Telegram (LEGACY channel → now the out-of-band ALERT carrier). Kept for easy
+    // revert; used by the scheduler watchdog to warn when WhatsApp is down.
     // Token also lives in ~/.openclaw/openclaw.json.
     telegram: {
         botToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
         ownerChatId: (process.env.TELEGRAM_OWNER_CHAT_ID || '').trim(),
     },
+
+    // SMTP — SEND-side email, used ONLY for out-of-band alerts (normal email is
+    // read-only IMAP above). Defaults to Gmail; creds fall back to the personal
+    // IMAP account since a Gmail app password works for both IMAP and SMTP.
+    smtp: {
+        host: (process.env.SMTP_HOST || 'smtp.gmail.com').trim(),
+        port: parseInt(process.env.SMTP_PORT || '465', 10),
+        user: (process.env.SMTP_USER || '').trim(),
+        password: (process.env.SMTP_PASSWORD || '').trim(),
+        from: (process.env.SMTP_FROM || '').trim(),
+    },
+
+    // Where out-of-band alert emails go (the watchdog's email fallback).
+    alertEmail: (process.env.ALERT_EMAIL || '').trim(),
 
     // Proactive scheduler (services/scheduler.ts → dist-services/scheduler.js)
     // Deterministic, no LLM: reads SQLite and pushes formatted messages on a timer.
@@ -112,6 +127,22 @@ export const config = {
         quietShabbat: (process.env.SCHEDULER_QUIET_SHABBAT || 'true').toLowerCase() !== 'false',
         shabbatStartHourFri: parseInt(process.env.SCHEDULER_SHABBAT_START_FRI || '18', 10),
         shabbatEndHourSat: parseInt(process.env.SCHEDULER_SHABBAT_END_SAT || '20', 10),
+
+        // Channel watchdog — polls WhatsApp (primary) health and alerts out of band
+        // (Telegram + email) when it's down. Bypasses quiet hours: a dead primary
+        // channel matters at 3am too.
+        //
+        // Alerting is EDGE-TRIGGERED and deduped in SQLite (settings table), so a
+        // multi-day outage produces ONE alert, not one per failed probe. Reminders
+        // are opt-in and off by default — set reminderHours>0 for a periodic nudge.
+        watchdogEnabled: (process.env.SCHEDULER_WATCHDOG || 'true').toLowerCase() !== 'false',
+        watchdogProbeMinutes: Math.max(1, parseInt(process.env.SCHEDULER_WATCHDOG_PROBE_MIN || '5', 10)),
+        // Consecutive failed probes required before alerting — debounces the brief
+        // "not linked" window during a normal gateway restart (3 × 5min = 15min).
+        watchdogFailuresBeforeAlert: Math.max(1, parseInt(process.env.SCHEDULER_WATCHDOG_FAILURES || '3', 10)),
+        // Repeat-nag interval while still down. 0 (default) = alert exactly once
+        // per outage, then stay quiet until it recovers.
+        watchdogReminderHours: Math.max(0, parseFloat(process.env.SCHEDULER_WATCHDOG_REMINDER_HOURS || '0')),
     },
 };
 
