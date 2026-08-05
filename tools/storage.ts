@@ -419,33 +419,9 @@ export function appendToLearnedFacts(fact: string): void {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  WHATSAPP MEDIA (Read-Only Query)
-// ═══════════════════════════════════════════════════════════════════
-
-export function getRecentWhatsAppMedia(
-    count: number = 10,
-    mediaType?: string
-): { id: number; sender: string; media_type: string; mime_type: string | null; caption: string | null; file_path: string; file_size: number | null; received_at: string }[] {
-    try {
-        let query = 'SELECT id, sender, media_type, mime_type, caption, file_path, file_size, received_at FROM whatsapp_media';
-        const params: any[] = [];
-
-        if (mediaType) {
-            query += ' WHERE media_type = ?';
-            params.push(mediaType);
-        }
-
-        query += ' ORDER BY id DESC LIMIT ?';
-        params.push(count);
-
-        const stmt = db.prepare(query);
-        return stmt.all(...params) as any[];
-    } catch (err: any) {
-        console.error('[DB] Failed to query WhatsApp media:', err.message);
-        return [];
-    }
-}
+// The whatsapp_media TABLE is intentionally kept (services/dashboard.ts still
+// counts rows, and services/whatsapp-listener.ts writes it if ever re-enabled),
+// but the read helper is gone with the list_whatsapp_media tool it served.
 
 // ═══════════════════════════════════════════════════════════════════
 //  BUDGETS (Monthly Spending Limits)
