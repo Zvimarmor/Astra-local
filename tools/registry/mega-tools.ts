@@ -7,7 +7,6 @@ import { calendarTools } from '../calendar';
 import { habitTools } from '../habits';
 import { dailyStatusTools } from '../daily-status';
 import { memoryTools } from '../memory';
-import { whatsappMediaTools } from '../whatsapp-media';
 import { voiceTools } from '../voice';
 import { notesTools } from '../notes';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
@@ -324,7 +323,7 @@ export const megaTools = {
         },
     },
 
-    // ─── 8. Assistant utilities (time, web, status, voice, media) ────
+    // ─── 8. Assistant utilities (time, status, voice) ────────────────
     assistant_utils: {
         name: 'assistant_utils',
         description:
@@ -333,16 +332,14 @@ export const megaTools = {
             "'daily_status' (pending tasks + habits summary), " +
             "'speak' (say a reply aloud — speakers or WhatsApp voice per the current mode; needs text), " +
             "'set_voice_mode' (needs mode: speakers/whatsapp/off), 'get_voice_mode', " +
-            "'text_to_speech' (needs text, max 500 chars), 'list_whatsapp_media' (recent received media; optional count, media_type). " +
+            "'text_to_speech' (needs text, max 500 chars). " +
             "For real-time info (news, weather, current events) use the native web_search tool directly, not this one.",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['help', 'current_time', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech', 'list_whatsapp_media'], description: 'Helper to run' },
+                action: { type: 'string', enum: ['help', 'current_time', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech'], description: 'Helper to run' },
                 text: { type: 'string', description: 'Text to speak (for speak / text_to_speech)' },
                 mode: { type: 'string', enum: ['speakers', 'whatsapp', 'off'], description: 'Voice output mode (for set_voice_mode)' },
-                count: { type: 'number', description: 'How many media items (for list_whatsapp_media)' },
-                media_type: { type: 'string', enum: ['image', 'video', 'document'], description: 'Filter media (for list_whatsapp_media)' },
             },
             required: ['action'],
         },
@@ -359,8 +356,7 @@ export const megaTools = {
                 case 'set_voice_mode': return call(voiceTools as DomainMap, 'set_voice_mode', { mode: a.mode });
                 case 'get_voice_mode': return call(voiceTools as DomainMap, 'get_voice_mode', {});
                 case 'text_to_speech': return call(voiceTools as DomainMap, 'text_to_speech', { text: a.text });
-                case 'list_whatsapp_media': return call(whatsappMediaTools as DomainMap, 'list_whatsapp_media', { count: a.count, media_type: a.media_type });
-                default: return badAction(a.action, ['help', 'current_time', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech', 'list_whatsapp_media']);
+                default: return badAction(a.action, ['help', 'current_time', 'daily_status', 'speak', 'set_voice_mode', 'get_voice_mode', 'text_to_speech']);
             }
         },
     },
