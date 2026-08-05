@@ -38,6 +38,11 @@ const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getCalendarClient } = require(path.join(DIST, 'google-auth.js'));
+// Channel watchdog: probe WhatsApp (primary) health, alert out of band if down.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { checkWhatsAppHealth } = require(path.join(DIST, 'channel-health.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { sendOutOfBandAlert } = require(path.join(DIST, 'alert.js'));
 
 const TZ: string = config.timezone;
 const WA_TARGET: string = config.whatsapp.ownerTarget;
@@ -352,6 +357,142 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
     }
 }
 
+// ─── Channel watchdog ─────────────────────────────────────────────────
+// Catches the failure mode that silently killed the primary channel for 17 days
+// (2026-07-19 → 2026-08-05): WhatsApp Web unlinked itself, OpenClaw wiped its
+// stored creds, and the gateway health-monitor looped "restarting (reason:
+// stopped)" every 10 minutes with nobody watching. Every proactive message in
+// that window was lost. WhatsApp cannot report its own death, so the alert has
+// to leave by a different road: Telegram Bot API + SMTP email (tools/alert.ts).
+//
+// Alerting is EDGE-TRIGGERED, and the edge lives in SQLite (settings table) —
+// NOT in a module variable. That matters: the scheduler restarts (launchd,
+// reboots, redeploys), and in-memory state would re-fire an alert on every
+// restart. Persisted, an outage of any length yields exactly one alert.
+
+const WD_ENABLED: boolean = config.scheduler.watchdogEnabled;
+const WD_PROBE_MS: number = config.scheduler.watchdogProbeMinutes * 60 * 1000;
+const WD_FAILURES: number = config.scheduler.watchdogFailuresBeforeAlert;
+const WD_REMINDER_MS: number = config.scheduler.watchdogReminderHours * 60 * 60 * 1000;
+// If an alert reaches NO carrier we leave the state alone so it retries, but we
+// don't retry on every probe — that would hammer a broken SMTP server.
+const WD_RETRY_MS = 30 * 60 * 1000;
+
+// settings keys (SQLite `settings` table via storage.getSetting/setSetting)
+const K_STATE = 'watchdog.whatsapp.state';           // 'ok' | 'down'
+const K_STREAK = 'watchdog.whatsapp.fail_streak';    // consecutive failed probes
+const K_FIRST_FAIL = 'watchdog.whatsapp.first_fail_at';  // ms epoch, start of outage
+const K_LAST_ALERT = 'watchdog.whatsapp.last_alert_at';  // ms epoch, last DELIVERED alert
+const K_LAST_TRY = 'watchdog.whatsapp.last_attempt_at';  // ms epoch, last alert ATTEMPT
+
+const num = (key: string): number => parseInt(storage.getSetting(key, '0'), 10) || 0;
+
+let lastProbeAt = 0; // in-memory: probe cadence only — safe to lose on restart
+
+function humanDuration(ms: number): string {
+    if (ms <= 0) return 'just now';
+    const mins = Math.floor(ms / 60000);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+    return `${Math.floor(hrs / 24)}d ${hrs % 24}h`;
+}
+
+/** Attempt an out-of-band alert; record the attempt either way. Never throws. */
+async function tryAlert(subject: string, body: string): Promise<boolean> {
+    storage.setSetting(K_LAST_TRY, String(Date.now()));
+    try {
+        const res = await sendOutOfBandAlert(subject, body);
+        const carriers = [res.telegram ? 'telegram' : null, res.email ? 'email' : null]
+            .filter(Boolean).join('+') || 'none';
+        console.log(`[Watchdog] alert "${subject}" → delivered via: ${carriers}`);
+        if (res.delivered) storage.setSetting(K_LAST_ALERT, String(Date.now()));
+        return res.delivered;
+    } catch (err: any) {
+        // sendOutOfBandAlert is already no-throw; this is pure belt & braces so a
+        // watchdog fault can never take the scheduler's main loop down with it.
+        console.error('[Watchdog] alert error —', String(err?.message || err).slice(0, 200));
+        return false;
+    }
+}
+
+async function runWatchdog(): Promise<void> {
+    const now = Date.now();
+    if (now - lastProbeAt < WD_PROBE_MS) return;
+    lastProbeAt = now;
+
+    const h = await checkWhatsAppHealth();
+    const state = storage.getSetting(K_STATE, 'ok');
+
+    // ── Healthy ────────────────────────────────────────────────────────
+    if (h.ok) {
+        storage.setSetting(K_STREAK, '0');
+        storage.setSetting(K_FIRST_FAIL, '0');
+        if (state === 'down') {
+            // Recovery is the other edge — one message, and it closes the incident
+            // even if delivery fails (we must not get stuck re-announcing recovery).
+            const downMs = now - (num(K_LAST_ALERT) || now);
+            storage.setSetting(K_STATE, 'ok');
+            await tryAlert(
+                '✅ Astra: WhatsApp is back',
+                `Astra's WhatsApp channel is linked and running again.\n\n` +
+                `Was down for roughly ${humanDuration(downMs)}.\n` +
+                `Proactive briefings resume on the normal schedule.`,
+            );
+        }
+        return;
+    }
+
+    // ── Unhealthy ──────────────────────────────────────────────────────
+    const streak = num(K_STREAK) + 1;
+    storage.setSetting(K_STREAK, String(streak));
+    if (streak === 1) storage.setSetting(K_FIRST_FAIL, String(now));
+
+    const detail = h.probeError
+        ? `probe failed: ${h.probeError}`
+        : `state=${h.statusState} linked=${h.linked} connected=${h.connected} health=${h.healthState}${h.lastError ? ` lastError=${h.lastError}` : ''}`;
+    console.warn(`[Watchdog] WhatsApp unhealthy (${streak}/${WD_FAILURES}) — ${detail}`);
+
+    if (streak < WD_FAILURES) return; // debounce: ride out gateway restarts
+
+    const downSince = num(K_FIRST_FAIL) || now;
+    const downFor = humanDuration(now - downSince);
+
+    // Already alerted for this outage → stay quiet unless reminders are enabled.
+    if (state === 'down') {
+        if (WD_REMINDER_MS <= 0) return;
+        if (now - num(K_LAST_ALERT) < WD_REMINDER_MS) return;
+        await tryAlert(
+            '⚠️ Astra: WhatsApp still down',
+            `Astra's WhatsApp channel is STILL down (${downFor}).\n\n${detail}\n\n` +
+            `Re-link on the Mac Mini:\n  openclaw channels login --channel whatsapp --account default`,
+        );
+        return;
+    }
+
+    // First confirmed outage. If nothing delivered, leave state 'ok' so we retry
+    // — but not before WD_RETRY_MS, so a broken carrier isn't hammered.
+    if (now - num(K_LAST_TRY) < WD_RETRY_MS && num(K_LAST_TRY) > 0) return;
+
+    const delivered = await tryAlert(
+        '⚠️ Astra: WhatsApp channel is DOWN',
+        `Astra can't reach you on WhatsApp — proactive briefings are NOT being delivered.\n\n` +
+        `Down for: ${downFor} (first failed probe ${new Date(downSince).toLocaleString('en-GB', { timeZone: TZ })})\n` +
+        `Details: ${detail}\n\n` +
+        `Fix — on the Mac Mini, run and scan the QR:\n` +
+        `  openclaw channels login --channel whatsapp --account default\n\n` +
+        `Verify with:\n  openclaw channels status --json\n\n` +
+        `You will NOT get another email about this outage; the next one comes only ` +
+        `when WhatsApp recovers.`,
+    );
+    if (delivered) {
+        storage.setSetting(K_STATE, 'down');
+        console.error(`[Watchdog] 🔴 WhatsApp DOWN for ${downFor} — alert sent, going quiet until recovery.`);
+    } else {
+        console.error('[Watchdog] 🔴 WhatsApp DOWN but NO alert carrier worked — will retry in 30m.');
+    }
+}
+
 // ─── Main tick ────────────────────────────────────────────────────────
 
 let ticking = false;
@@ -400,6 +541,16 @@ async function tick(): Promise<void> {
                 console.error(`[Scheduler] ${s.job}: error —`, err.message);
             }
         }
+
+        // Watchdog last: a diagnostic probe must never delay a due briefing, and
+        // its own failure must never abort the tick that carries them.
+        if (WD_ENABLED) {
+            try {
+                await runWatchdog();
+            } catch (err: any) {
+                console.error('[Watchdog] unexpected error —', String(err?.message || err).slice(0, 200));
+            }
+        }
     } finally {
         ticking = false;
     }
@@ -414,6 +565,14 @@ console.log(`[Scheduler] Timezone: ${TZ} | tick: ${TICK_MS / 1000}s`);
 console.log(`[Scheduler] WhatsApp: ${WA_TARGET ? 'target set' : 'NO TARGET'} → ${WA_TARGET || 'NOT SET'}`);
 const sList = storage.getSchedules();
 console.log(`[Scheduler] ${sList.length} schedule(s): ${sList.map((s: any) => `${s.job}@${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`).join(', ')}`);
+console.log(
+    WD_ENABLED
+        ? `[Watchdog] enabled | probe ${config.scheduler.watchdogProbeMinutes}m | alert after ${WD_FAILURES} failures | ` +
+          `reminders ${WD_REMINDER_MS > 0 ? `every ${config.scheduler.watchdogReminderHours}h` : 'off (one alert per outage)'} | ` +
+          `carriers: telegram=${config.telegram.botToken && config.telegram.ownerChatId ? 'ready' : 'NOT SET'}, ` +
+          `email=${config.alertEmail && (config.smtp.password || config.imapAccounts.personal.password) ? 'ready' : 'NOT SET'}`
+        : '[Watchdog] disabled (SCHEDULER_WATCHDOG=false)',
+);
 
 void tick();
 setInterval(() => { void tick(); }, TICK_MS);

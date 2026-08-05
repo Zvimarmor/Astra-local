@@ -3,6 +3,11 @@ dist/
 dist-services/
 .env
 .env.immich
+# Any local .env variant/backup (e.g. .env.bak.20260805T145022) — these hold live
+# credentials. The *.example templates are the only env files that get committed.
+.env.*
+!.env.example
+!.env.immich.example
 data/service_account.json
 data/memory.db
 data/memory.db-shm
