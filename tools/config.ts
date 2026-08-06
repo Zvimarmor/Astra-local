@@ -29,6 +29,9 @@ const PROJECT_ROOT = findProjectRoot(__dirname);
 dotenv.config({ path: path.join(PROJECT_ROOT, '.env') });
 
 export const config = {
+    /** Repo root, resolved by walking up from this file. Handy for anything that
+     *  needs a path relative to the project rather than to the compiled dist/. */
+    projectRoot: PROJECT_ROOT,
     ownerPhoneNumber: (process.env.OWNER_PHONE_NUMBER || '').replace(/\D/g, ''),
     calendarId: (process.env.CALENDAR_ID || 'primary').trim(),
     serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(PROJECT_ROOT, 'data', 'service_account.json'),
