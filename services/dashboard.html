@@ -433,7 +433,7 @@
             const refreshEl = document.getElementById('lastRefresh');
 
             // Global status
-            const isHealthy = data.ollama?.connected && data.system;
+            const isHealthy = data.gemini?.connected && data.system;
             globalDot.className = `status-dot ${isHealthy ? 'green' : 'red'}`;
             refreshEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
 
@@ -454,14 +454,11 @@
             </div>`;
 
             // ─── Services Card ───────────────────────────────
-            const ollamaStatus = data.ollama?.connected ? 'ok' : 'error';
-            const ollamaLabel = data.ollama?.connected ? 'Connected' : 'Offline';
-            let modelText = 'No models';
-            let hasLlava = false;
-            if (data.ollama?.models?.length) {
-                modelText = data.ollama.models.map(m => m.name).join(', ');
-                hasLlava = data.ollama.models.some(m => m.name.includes('llava'));
-            }
+            const geminiStatus = data.gemini?.connected ? 'ok' : 'error';
+            const geminiLabel = data.gemini?.connected ? 'Connected' : (data.gemini?.error || 'Offline');
+            const modelText = data.gemini?.model || 'Not configured';
+            // Gemini is natively multimodal — vision is ready whenever the API is.
+            const hasVision = !!data.gemini?.connected && data.gemini?.modelAvailable !== false;
 
             html += `
             <div class="card">
@@ -471,16 +468,16 @@
                 </div>
                 <div class="service-list">
                     <div class="service-row">
-                        <span class="service-name"><span class="status-dot ${ollamaStatus === 'ok' ? 'green' : 'red'}"></span> Ollama</span>
-                        <span class="service-status ${ollamaStatus}">${ollamaLabel}</span>
+                        <span class="service-name"><span class="status-dot ${geminiStatus === 'ok' ? 'green' : 'red'}"></span> Gemini API</span>
+                        <span class="service-status ${geminiStatus}">${geminiLabel}</span>
                     </div>
                     <div class="service-row">
-                        <span class="service-name">🤖 Models</span>
+                        <span class="service-name">🤖 Model</span>
                         <span style="font-size:12px;color:var(--text-secondary);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${modelText}">${modelText}</span>
                     </div>
                     <div class="service-row">
-                        <span class="service-name">👁️ Vision (llava)</span>
-                        <span class="service-status ${hasLlava ? 'ok' : 'warn'}">${hasLlava ? 'Ready' : 'Missing'}</span>
+                        <span class="service-name">👁️ Vision</span>
+                        <span class="service-status ${hasVision ? 'ok' : 'warn'}">${hasVision ? 'Ready' : 'Unavailable'}</span>
                     </div>
                     <div class="service-row">
                         <span class="service-name"><span class="status-dot green"></span> Dashboard</span>

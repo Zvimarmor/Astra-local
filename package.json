@@ -1,14 +1,16 @@
 {
   "name": "astra-local-agent",
   "version": "1.0.0",
-  "description": "Astra — Personal Local AI Agent powered by OpenClaw + Ollama",
+  "description": "Astra — Personal AI Agent powered by OpenClaw + Gemini API",
   "main": "dist/index.js",
   "scripts": {
     "build": "npx tsc",
     "build:services": "npx tsc -p tsconfig.services.json",
     "build:all": "npm run build && npm run build:services",
     "listener": "node dist-services/whatsapp-listener.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "cc:enrol": "node dist/private/enrol.js",
+    "test": "echo \"No tests yet\" && exit 0",
+    "cc:code": "node dist/private/code.js"
   },
   "repository": {
     "type": "git",
@@ -16,9 +18,8 @@
   },
   "keywords": [
     "ai-agent",
-    "local-llm",
+    "gemini",
     "openclaw",
-    "ollama",
     "personal-assistant"
   ],
   "author": "Zvi Marmor",

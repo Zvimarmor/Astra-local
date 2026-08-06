@@ -9,7 +9,7 @@
  * │  WhatsApp via the OpenClaw gateway (`openclaw message send`).       │
  * │                                                                    │
  * │  ⛔ NO LLM in the loop — it cannot hallucinate "I sent it".       │
- * │  ⛔ Runs even if Ollama is cold/asleep.                           │
+ * │  ⛔ Runs even if the model API is down or rate-limited.           │
  * │  ✅ Reuses the compiled tool logic in ../dist (storage, digest).  │
  * │  ✅ Once-per-day idempotency via schedule_runs UNIQUE constraint. │
  * └──────────────────────────────────────────────────────────────────┘
@@ -31,9 +31,8 @@ const { config } = require(path.join(DIST, 'config.js'));
 const storage = require(path.join(DIST, 'storage.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
-// spotifyd decommissioned 2026-07-06 — music_alarm handling disabled below.
-// Re-enable: uncomment this require + the 'music_alarm' case, bring spotifyd up.
-// const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
+// music_alarm re-enabled 2026-08-06 (spotifyd brought back up).
+const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -104,6 +103,24 @@ async function sendWhatsApp(text: string): Promise<boolean> {
         return false;
     }
     return sendWhatsAppText(text);
+}
+
+// ─── Owner notification with fallback ─────────────────────────────────
+// Every proactive message used to go out over WhatsApp ONLY — if that send
+// failed (or a job threw before producing a message at all), the failure was
+// recorded in SQLite and nowhere else, so the owner never found out. This
+// wraps every owner-facing notification (briefings, alerts, and now job
+// failures too) with the same out-of-band fallback the channel watchdog uses:
+// WhatsApp first, then Telegram + email if that didn't land.
+
+/** Send `text` to the owner; fall back to Telegram+email if WhatsApp fails. */
+async function notifyOwner(subject: string, text: string): Promise<{ via: string; delivered: boolean }> {
+    if (await sendWhatsApp(text)) return { via: 'whatsapp', delivered: true };
+
+    console.warn(`[Scheduler] WhatsApp send failed for "${subject}" — falling back to out-of-band alert.`);
+    const res = await sendOutOfBandAlert(subject, text);
+    const carriers = [res.telegram ? 'telegram' : null, res.email ? 'email' : null].filter(Boolean).join('+');
+    return { via: carriers || 'none', delivered: res.delivered };
 }
 
 // ─── Analytical jobs are now FULLY deterministic (2026-07-06) ─────────
@@ -223,12 +240,84 @@ async function buildEveningReview(dateStr: string): Promise<string> {
         lines.push('', '✅ No pending tasks — all clear!');
     }
     if (recurringCount > 0) lines.push('', `🔄 Recurring templates active: ${recurringCount}`);
+
+    // Habit streaks. Only shown when there are habits at all, so this stays silent
+    // rather than printing an empty section for users who don't track any.
+    const habitsWithStreaks = storage.getHabitsWithStreaks();
+    if (habitsWithStreaks.length > 0) {
+        lines.push('', '🔥 Habits:');
+        for (const h of habitsWithStreaks) {
+            const mark = h.done_today ? '✅' : '⬜';
+            const streak = h.streak > 1 ? ` — ${h.streak}-day streak` : (h.streak === 1 ? ' — day 1' : '');
+            lines.push(`  ${mark} ${h.name}${streak}`);
+        }
+    }
+
     lines.push('', 'Good night! 😴');
     return lines.join('\n');
 }
 
 function rank(priority: string): number {
     return ({ high: 0, medium: 1, low: 2 } as Record<string, number>)[priority] ?? 1;
+}
+
+/**
+ * Deadline watch — what's overdue or due today/soon.
+ *
+ * Silent when there is nothing to report (returns null), so it only ever
+ * interrupts when a deadline actually needs attention. Fully deterministic:
+ * built straight from SQLite with no model in the path, which also means it
+ * costs no Gemini quota and can't be rate-limited.
+ */
+function buildDeadlineWatch(dateStr: string): string | null {
+    const overdue = storage.getPendingTasks('overdue');
+    const dueToday = storage.getPendingTasks('today').filter((t: any) => t.due_date === dateStr);
+    const projects = storage.getUpcomingProjectDeadlines(7);
+
+    if (!overdue.length && !dueToday.length && !projects.length) return null;
+
+    const lines: string[] = [`⏰ Deadlines — ${dateStr}`, ''];
+
+    if (overdue.length) {
+        lines.push(`🔴 Overdue (${overdue.length}):`);
+        for (const t of overdue.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (was due ${t.due_date})`);
+        if (overdue.length > 10) lines.push(`  …and ${overdue.length - 10} more`);
+        lines.push('');
+    }
+    if (dueToday.length) {
+        lines.push(`📌 Due today (${dueToday.length}):`);
+        for (const t of dueToday) {
+            const est = t.estimate_minutes ? ` ~${t.estimate_minutes}m` : '';
+            lines.push(`  • ${t.id} ${t.title}${est}`);
+        }
+        lines.push('');
+    }
+    if (projects.length) {
+        lines.push('🎯 Projects closing in:');
+        for (const p of projects) {
+            const left = p.days_left === null ? '' :
+                p.days_left < 0 ? ` — ${Math.abs(p.days_left)}d overdue` :
+                p.days_left === 0 ? ' — due today' : ` — ${p.days_left}d left`;
+            lines.push(`  • ${p.name} (${p.done}/${p.total} done)${left}`);
+        }
+    }
+    return lines.join('\n').trim();
+}
+
+/**
+ * Stale-task nudge — undated tasks that have been pending a long time.
+ * Weekly, and silent when there's nothing stale. The point is to force a
+ * decision (schedule it or drop it) rather than let the list rot.
+ */
+function buildStaleTaskNudge(): string | null {
+    const stale = storage.getStaleTasks(21);
+    if (!stale.length) return null;
+
+    const lines: string[] = [`🧹 ${stale.length} task${stale.length === 1 ? '' : 's'} sitting with no deadline for 3+ weeks:`, ''];
+    for (const t of stale.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (added ${t.date})`);
+    if (stale.length > 10) lines.push(`  …and ${stale.length - 10} more`);
+    lines.push('', 'Worth giving these a date or dropping them?');
+    return lines.join('\n');
 }
 
 function buildBudgetAlert(): string | null {
@@ -324,6 +413,14 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             return { status: 'sent', message: await buildMorningBriefing(n.dateStr) };
         case 'evening_review':
             return { status: 'sent', message: await buildEveningReview(n.dateStr) };
+        case 'deadline_watch': {
+            const msg = buildDeadlineWatch(n.dateStr);
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
+        case 'stale_task_nudge': {
+            const msg = buildStaleTaskNudge();
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
         case 'budget_check': {
             const msg = buildBudgetAlert();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
@@ -332,8 +429,10 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             const msg = await buildEmailDigest();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
         }
-        /* music_alarm disabled 2026-07-06 (spotifyd decommissioned). Re-enable
-           with the ../spotify require above.
+        // RE-ENABLED 2026-08-06 alongside the manage_music chat tool: spotifyd is
+        // back up (it had only been stopped, never uninstalled). Without this case
+        // `manage_music(action="set_alarm")` would write an alarm row that never
+        // fires, so the two have to be enabled together.
         case 'music_alarm': {
             // payload carries {query,type}; play it via the compiled spotify tool.
             let p: any = {};
@@ -345,7 +444,6 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             }
             return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
         }
-        */
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
         case 'monthly_finance_review': {
@@ -526,19 +624,28 @@ async function tick(): Promise<void> {
             try {
                 const { status, message } = await runJob(s, n);
                 let finalStatus = status;
+                let via = '';
                 // recurring_gen is the only job that suppresses its notification during quiet.
                 const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
                 if (message && !suppressNotify) {
-                    const ok = await sendWhatsApp(message);
-                    finalStatus = ok ? 'sent' : 'error';
+                    const result = await notifyOwner(`Astra: ${s.job}`, message);
+                    finalStatus = result.delivered ? 'sent' : 'error';
+                    via = result.via;
                 } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
                 }
                 storage.updateScheduleRun(s.id, n.dateStr, finalStatus, quiet.quiet ? quiet.reason : null);
-                console.log(`[Scheduler] ${s.job}: ${finalStatus}${message && finalStatus === 'sent' ? ' (sent)' : ''}`);
+                console.log(`[Scheduler] ${s.job}: ${finalStatus}${via ? ` (via ${via})` : ''}`);
             } catch (err: any) {
                 storage.updateScheduleRun(s.id, n.dateStr, 'error', err.message);
                 console.error(`[Scheduler] ${s.job}: error —`, err.message);
+                // A crashed job used to be silent — recorded in SQLite only, never
+                // surfaced to the owner. Notify (with the same WhatsApp→OOB
+                // fallback) so a broken job is never discovered by its absence.
+                await notifyOwner(
+                    `⚠️ Astra: ${s.job} failed`,
+                    `Scheduled job "${s.job}" failed to run.\n\nError: ${err.message}`,
+                );
             }
         }
 

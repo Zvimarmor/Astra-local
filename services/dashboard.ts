@@ -31,7 +31,10 @@ const PORT = parseInt(process.env.DASHBOARD_PORT || '3001', 10);
 const TOKEN = process.env.DASHBOARD_TOKEN || '';
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'memory.db');
 const TIMEZONE = process.env.TIMEZONE || 'Asia/Jerusalem';
-const OLLAMA_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+// Gemini replaced the local Ollama endpoint (2026-08-06).
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-flash-latest').trim();
 
 // Dashboard HTML file path (relative to project root)
 const HTML_PATH = path.join(__dirname, '..', 'services', 'dashboard.html');
@@ -76,28 +79,35 @@ function getSystemInfo() {
     };
 }
 
-async function getOllamaInfo() {
+async function getGeminiInfo() {
+    if (!GEMINI_API_KEY) {
+        return { connected: false, model: GEMINI_MODEL, error: 'GEMINI_API_KEY not set' };
+    }
+
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(`${OLLAMA_URL}/api/tags`, {
+        // ListModels is free and consumes no generation quota.
+        const res = await fetch(`${GEMINI_BASE}/models`, {
+            headers: { 'x-goog-api-key': GEMINI_API_KEY },
             signal: controller.signal,
         });
         clearTimeout(timeout);
 
-        if (!res.ok) return { connected: false, error: `HTTP ${res.status}` };
+        if (!res.ok) return { connected: false, model: GEMINI_MODEL, error: `HTTP ${res.status}` };
 
         const data = await res.json() as any;
-        const models = (data.models || []).map((m: any) => ({
-            name: m.name,
-            size: m.size ? `${Math.round(m.size / 1024 / 1024 / 1024 * 10) / 10} GB` : 'unknown',
-            modified: m.modified_at || '',
-        }));
+        const ids: string[] = (data.models || []).map((m: any) => String(m.name).replace('models/', ''));
 
-        return { connected: true, models };
+        return {
+            connected: true,
+            model: GEMINI_MODEL,
+            modelAvailable: ids.includes(GEMINI_MODEL),
+            modelCount: ids.length,
+        };
     } catch (err: any) {
-        return { connected: false, error: err.message };
+        return { connected: false, model: GEMINI_MODEL, error: err.message };
     }
 }
 
@@ -216,9 +226,9 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const [system, ollama, database, financial, budgets] = await Promise.all([
+        const [system, gemini, database, financial, budgets] = await Promise.all([
             getSystemInfo(),
-            getOllamaInfo(),
+            getGeminiInfo(),
             getDatabaseInfo(),
             getFinancialInfo(),
             getBudgetInfo(),
@@ -228,7 +238,7 @@ const server = http.createServer(async (req, res) => {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
         });
-        res.end(JSON.stringify({ system, ollama, database, financial, budgets, timestamp: new Date().toISOString() }));
+        res.end(JSON.stringify({ system, gemini, database, financial, budgets, timestamp: new Date().toISOString() }));
         return;
     }
 

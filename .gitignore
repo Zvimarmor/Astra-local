@@ -30,3 +30,14 @@ plugin-skills/
 
 # Second-brain notes (private, not part of the code repo)
 vault/
+tools/*.js
+tools/*.d.ts
+tools/*.map
+
+# Per-machine private tools and skills — deliberately never committed.
+# The registry loads tools/private/ optionally, so a clone without it still
+# builds and runs; skills/_private/ is the matching chat-side half. Anything
+# host-specific or sensitive enough to stay off GitHub belongs here.
+tools/private/
+skills/_private/
+data/*-audit.log
