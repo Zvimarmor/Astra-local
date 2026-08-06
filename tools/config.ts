@@ -32,8 +32,18 @@ export const config = {
     ownerPhoneNumber: (process.env.OWNER_PHONE_NUMBER || '').replace(/\D/g, ''),
     calendarId: (process.env.CALENDAR_ID || 'primary').trim(),
     serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(PROJECT_ROOT, 'data', 'service_account.json'),
-    ollamaBaseUrl: (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim(),
-    ollamaModel: (process.env.OLLAMA_MODEL || 'qwen3:8b').trim(),
+    // Gemini API — replaced the local Ollama endpoint (2026-08-06) to free the
+    // ~7.6GB of RAM qwen3:8b was pinning on this 16GB Mac Mini.
+    //
+    // Model note: `gemini-1.5-flash` and `gemini-2.5-flash` are retired for new
+    // API keys ("no longer available to new users"). `gemini-flash-latest` is
+    // the current free-tier alias and is what this key can actually call —
+    // verify with `geminiHealth()` before pinning a specific version here.
+    gemini: {
+        apiKey: (process.env.GEMINI_API_KEY || '').trim(),
+        model: (process.env.GEMINI_MODEL || 'gemini-flash-latest').trim(),
+        timeoutMs: parseInt(process.env.GEMINI_TIMEOUT_MS || '60000', 10),
+    },
     timezone: process.env.TIMEZONE || 'Asia/Jerusalem',
     whitelistJids: (process.env.WHITELIST_JIDS || '').split(',').map(j => j.trim()).filter(Boolean),
     dbPath: process.env.DB_PATH || path.join(PROJECT_ROOT, 'data', 'memory.db'),
@@ -152,5 +162,9 @@ if (!config.ownerPhoneNumber) {
 } else {
     console.log(`[Config] Owner number: ...${config.ownerPhoneNumber.slice(-4)}`);
 }
-console.log(`[Config] Ollama: ${config.ollamaBaseUrl} (model: ${config.ollamaModel})`);
+if (!config.gemini.apiKey) {
+    console.warn('[Config] ⚠ GEMINI_API_KEY is not set — cloud inference will fail!');
+} else {
+    console.log(`[Config] Gemini: ${config.gemini.model} (key ...${config.gemini.apiKey.slice(-4)})`);
+}
 console.log(`[Config] DB: ${config.dbPath}`);

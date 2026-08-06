@@ -2,10 +2,16 @@
  * Astra AI Photo Organizer — Immich integration
  * 
  * This service runs periodically (via OpenClaw heartbeat) or manually.
- * It fetches unprocessed photos from Immich, sends them to the local
- * Ollama vision model (llava) to generate a semantic description,
- * and updates the photo's EXIF description in Immich so it becomes
- * searchable via Immich's Smart Search.
+ * It fetches unprocessed photos from Immich, sends them to the Gemini
+ * vision model to generate a semantic description, and updates the photo's
+ * EXIF description in Immich so it becomes searchable via Smart Search.
+ *
+ * Migrated off the local Ollama `llava` model on 2026-08-06 — Ollama was shut
+ * down to reclaim RAM, so this service had to move to the cloud path or stop
+ * working entirely.
+ *
+ * Like scheduler.ts, this require()s the compiled ../dist tool modules, so
+ * `npm run build` must run before `npm run build:services`.
  */
 
 import Database from 'better-sqlite3';
@@ -15,14 +21,15 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const DIST = path.join(__dirname, '..', 'dist');
+const { generateFromImage, geminiHealth } = require(path.join(DIST, 'gemini.js'));
+
 const config = {
     immichApiKey: process.env.IMMICH_API_KEY || '',
     immichBaseUrl: process.env.IMMICH_BASE_URL || 'http://localhost:2283',
-    ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434'
 };
 
 const BATCH_SIZE = 10;
-const VISION_MODEL = 'llava';
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'memory.db');
 
 // Ensure tracking table exists
@@ -70,22 +77,12 @@ async function immichFetch(endpoint: string, options: RequestInit = {}): Promise
 }
 
 async function analyzeImage(imageBuffer: Buffer): Promise<string> {
-    const base64Image = imageBuffer.toString('base64');
-    
-    const res = await fetch(`${config.ollamaBaseUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: VISION_MODEL,
-            prompt: "Describe this photo in 1-3 sentences. Focus on: setting, people count, activities, and prominent objects. Be concise.",
-            images: [base64Image],
-            stream: false
-        })
-    });
-
-    if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
-    const data = await res.json() as any;
-    return data.response.trim();
+    return await generateFromImage(
+        "Describe this photo in 1-3 sentences. Focus on: setting, people count, activities, and prominent objects. Be concise.",
+        imageBuffer,
+        'image/jpeg',
+        { maxOutputTokens: 256, temperature: 0.3 }
+    );
 }
 
 async function runOrganizer(dryRun: boolean = false) {
@@ -129,19 +126,15 @@ async function runOrganizer(dryRun: boolean = false) {
 
         if (unprocessed.length === 0) return;
 
-        // Check Ollama model
-        try {
-            const tagsRes = await fetch(`${config.ollamaBaseUrl}/api/tags`);
-            const tagsData = await tagsRes.json() as any;
-            const hasLlava = tagsData.models?.some((m: any) => m.name.startsWith(VISION_MODEL));
-            
-            if (!hasLlava) {
-                console.warn(`[Organizer] ⚠ Vision model '${VISION_MODEL}' not found in Ollama.`);
-                console.warn(`[Organizer] Please run: curl ${config.ollamaBaseUrl}/api/pull -d '{"name":"${VISION_MODEL}"}'`);
-                return;
-            }
-        } catch (e: any) {
-            console.error('[Organizer] Cannot connect to Ollama:', e.message);
+        // Check the Gemini path is live before burning through a batch.
+        const health = await geminiHealth();
+        if (!health.ok) {
+            console.error(`[Organizer] Cannot reach Gemini: ${health.error}`);
+            return;
+        }
+        if (health.modelAvailable === false) {
+            console.warn(`[Organizer] ⚠ Model '${health.model}' is not served to this API key.`);
+            console.warn(`[Organizer] Set GEMINI_MODEL in .env to a model this key can call.`);
             return;
         }
 
@@ -155,7 +148,7 @@ async function runOrganizer(dryRun: boolean = false) {
                 // We use the thumbnail endpoint (isWeb=true gives reasonable quality)
                 const imageBuffer = await immichFetch(`/assets/${asset.id}/thumbnail?size=large`);
                 
-                console.log(`[Organizer] Downloaded thumbnail (${Math.round(imageBuffer.length / 1024)} KB). Analyzing with ${VISION_MODEL}...`);
+                console.log(`[Organizer] Downloaded thumbnail (${Math.round(imageBuffer.length / 1024)} KB). Analyzing with ${health.model}...`);
                 
                 const description = await analyzeImage(imageBuffer);
                 console.log(`[Organizer] ✨ AI Description: "${description}"`);

@@ -30,3 +30,6 @@ plugin-skills/
 
 # Second-brain notes (private, not part of the code repo)
 vault/
+tools/*.js
+tools/*.d.ts
+tools/*.map

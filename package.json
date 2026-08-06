@@ -1,7 +1,7 @@
 {
   "name": "astra-local-agent",
   "version": "1.0.0",
-  "description": "Astra — Personal Local AI Agent powered by OpenClaw + Ollama",
+  "description": "Astra — Personal AI Agent powered by OpenClaw + Gemini API",
   "main": "dist/index.js",
   "scripts": {
     "build": "npx tsc",
@@ -16,9 +16,8 @@
   },
   "keywords": [
     "ai-agent",
-    "local-llm",
+    "gemini",
     "openclaw",
-    "ollama",
     "personal-assistant"
   ],
   "author": "Zvi Marmor",
