@@ -9,7 +9,8 @@
     "build:all": "npm run build && npm run build:services",
     "listener": "node dist-services/whatsapp-listener.js",
     "cc:enrol": "node dist/private/enrol.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "echo \"No tests yet\" && exit 0",
+    "cc:code": "node dist/private/code.js"
   },
   "repository": {
     "type": "git",
