@@ -9,7 +9,7 @@
  * │  WhatsApp via the OpenClaw gateway (`openclaw message send`).       │
  * │                                                                    │
  * │  ⛔ NO LLM in the loop — it cannot hallucinate "I sent it".       │
- * │  ⛔ Runs even if Ollama is cold/asleep.                           │
+ * │  ⛔ Runs even if the model API is down or rate-limited.           │
  * │  ✅ Reuses the compiled tool logic in ../dist (storage, digest).  │
  * │  ✅ Once-per-day idempotency via schedule_runs UNIQUE constraint. │
  * └──────────────────────────────────────────────────────────────────┘
@@ -31,9 +31,8 @@ const { config } = require(path.join(DIST, 'config.js'));
 const storage = require(path.join(DIST, 'storage.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { emailDigestTools } = require(path.join(DIST, 'email-digest.js'));
-// spotifyd decommissioned 2026-07-06 — music_alarm handling disabled below.
-// Re-enable: uncomment this require + the 'music_alarm' case, bring spotifyd up.
-// const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
+// music_alarm re-enabled 2026-08-06 (spotifyd brought back up).
+const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -104,6 +103,24 @@ async function sendWhatsApp(text: string): Promise<boolean> {
         return false;
     }
     return sendWhatsAppText(text);
+}
+
+// ─── Owner notification with fallback ─────────────────────────────────
+// Every proactive message used to go out over WhatsApp ONLY — if that send
+// failed (or a job threw before producing a message at all), the failure was
+// recorded in SQLite and nowhere else, so the owner never found out. This
+// wraps every owner-facing notification (briefings, alerts, and now job
+// failures too) with the same out-of-band fallback the channel watchdog uses:
+// WhatsApp first, then Telegram + email if that didn't land.
+
+/** Send `text` to the owner; fall back to Telegram+email if WhatsApp fails. */
+async function notifyOwner(subject: string, text: string): Promise<{ via: string; delivered: boolean }> {
+    if (await sendWhatsApp(text)) return { via: 'whatsapp', delivered: true };
+
+    console.warn(`[Scheduler] WhatsApp send failed for "${subject}" — falling back to out-of-band alert.`);
+    const res = await sendOutOfBandAlert(subject, text);
+    const carriers = [res.telegram ? 'telegram' : null, res.email ? 'email' : null].filter(Boolean).join('+');
+    return { via: carriers || 'none', delivered: res.delivered };
 }
 
 // ─── Analytical jobs are now FULLY deterministic (2026-07-06) ─────────
@@ -332,8 +349,10 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             const msg = await buildEmailDigest();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
         }
-        /* music_alarm disabled 2026-07-06 (spotifyd decommissioned). Re-enable
-           with the ../spotify require above.
+        // RE-ENABLED 2026-08-06 alongside the manage_music chat tool: spotifyd is
+        // back up (it had only been stopped, never uninstalled). Without this case
+        // `manage_music(action="set_alarm")` would write an alarm row that never
+        // fires, so the two have to be enabled together.
         case 'music_alarm': {
             // payload carries {query,type}; play it via the compiled spotify tool.
             let p: any = {};
@@ -345,7 +364,6 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             }
             return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
         }
-        */
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
         case 'monthly_finance_review': {
@@ -526,19 +544,28 @@ async function tick(): Promise<void> {
             try {
                 const { status, message } = await runJob(s, n);
                 let finalStatus = status;
+                let via = '';
                 // recurring_gen is the only job that suppresses its notification during quiet.
                 const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
                 if (message && !suppressNotify) {
-                    const ok = await sendWhatsApp(message);
-                    finalStatus = ok ? 'sent' : 'error';
+                    const result = await notifyOwner(`Astra: ${s.job}`, message);
+                    finalStatus = result.delivered ? 'sent' : 'error';
+                    via = result.via;
                 } else if (message && suppressNotify) {
                     finalStatus = 'skipped_quiet';
                 }
                 storage.updateScheduleRun(s.id, n.dateStr, finalStatus, quiet.quiet ? quiet.reason : null);
-                console.log(`[Scheduler] ${s.job}: ${finalStatus}${message && finalStatus === 'sent' ? ' (sent)' : ''}`);
+                console.log(`[Scheduler] ${s.job}: ${finalStatus}${via ? ` (via ${via})` : ''}`);
             } catch (err: any) {
                 storage.updateScheduleRun(s.id, n.dateStr, 'error', err.message);
                 console.error(`[Scheduler] ${s.job}: error —`, err.message);
+                // A crashed job used to be silent — recorded in SQLite only, never
+                // surfaced to the owner. Notify (with the same WhatsApp→OOB
+                // fallback) so a broken job is never discovered by its absence.
+                await notifyOwner(
+                    `⚠️ Astra: ${s.job} failed`,
+                    `Scheduled job "${s.job}" failed to run.\n\nError: ${err.message}`,
+                );
             }
         }
 

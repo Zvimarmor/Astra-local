@@ -22,7 +22,7 @@ import { notesTools } from '../notes';
 // import { emailTools } from '../email';
 // import { emailDigestTools } from '../email-digest';
 // import { immichTools } from '../immich';
-// import { spotifyTools } from '../spotify';
+import { spotifyTools } from '../spotify';   // RE-ENABLED 2026-08-06 (manage_music)
 
 /**
  * Mega-Tools — consolidated tool surface for the local 8B model.
@@ -73,10 +73,10 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
     manage_notes: { category: '📥 Info & memory', blurb: 'second-brain notes vault (auto-linked)', example: '"Save a note: …" · "What notes do I have about X?"' },
+    manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
     // DISABLED 2026-07-06 (re-enable with the matching tool blocks below):
     // manage_email: { category: '📥 Info & memory', blurb: 'read your inbox (can\'t send)', example: '"Any new emails?" · "Read email 12"' },
     // manage_photos: { category: '📥 Info & memory', blurb: 'Immich photo search & albums', example: '"Find beach photos" · "Make an album called Trip 2026"' },
-    // manage_music: { category: '🎵 Media', blurb: 'Spotify playback & music alarms', example: '"Play Pink Floyd" · "Wake me with jazz at 7am"' },
 };
 const HELP_CATEGORY_ORDER = ['📋 Productivity', '💰 Money', '📥 Info & memory', '🎵 Media', '🧩 Other'];
 
@@ -365,14 +365,11 @@ export const megaTools = {
         },
     },
 
-    /* ─── DISABLED 2026-07-06 (speed trim) — manage_music ──────────────────
-       Removed from the chat surface; spotifyd is being decommissioned on the
-       Mac Mini (music handled from the phone). Domain logic intact in
-       ../spotify. To RE-ENABLE: uncomment the ../spotify import + HELP_META
-       entry above and this block, `npm run build`, restore the spotify skill,
-       and bring spotifyd back up (launchctl bootstrap).
-
     // ─── 9. Music (Spotify → spotifyd on the Mac) ────────────────────
+    // RE-ENABLED 2026-08-06: spotifyd was never uninstalled (brew 0.4.2, config
+    // + cached OAuth intact) — it had only been stopped. The 2026-07-06 "speed
+    // trim" reason is also gone: that was to shrink the system prompt for the
+    // local 8B model, and the engine is Gemini now.
     manage_music: {
         name: 'manage_music',
         description:
@@ -408,7 +405,6 @@ export const megaTools = {
             }
         },
     },
-    ─── end disabled block ─── */
 
     // ─── Notes (second-brain Obsidian vault) ─────────────────────────
     manage_notes: {

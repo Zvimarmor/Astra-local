@@ -6,9 +6,11 @@
 - User asks about weather in any city
 
 ## Tools Available
-- `web_search` — OpenClaw's native, provider-backed web search (currently DuckDuckGo). This
-  is a built-in capability, not one of Astra's `manage_*`/`assistant_utils` tools — call it
-  directly by name.
+- `web_search` — OpenClaw's native, provider-backed web search. Backed by a **local SearXNG
+  instance** on `127.0.0.1:8888` (launchd `com.astra.searxng`), which aggregates ~20 upstream
+  engines. This is a built-in capability, not one of Astra's `manage_*`/`assistant_utils`
+  tools — call it directly by name. (Was DuckDuckGo until 2026-08-06; DDG started serving
+  bot-detection challenges to this host.)
 - `web_fetch` — fetch the actual content of a URL. `web_search` alone only returns titles and
   short link blurbs (e.g. "AccuWeather hourly forecast for Tel Aviv") — it usually does NOT
   contain the actual answer (a number, a score, a current fact).
@@ -24,6 +26,9 @@
 4. Present results concisely — summarize, don't dump raw data.
 5. If both search and fetch come up empty, say so plainly and suggest a rephrase.
 6. Always cite the source of the information.
+7. SearXNG rotates upstream engines, so an individual query can come back thin while the next
+   one is fine. If a search returns very few results, retry once with reworded terms before
+   telling the user you couldn't find anything.
 
 ## Examples
 - "What's the weather in Tel Aviv?" → `web_search(query="weather Tel Aviv")`
