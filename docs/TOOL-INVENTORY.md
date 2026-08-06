@@ -4,12 +4,22 @@
 server (`tools/list`), and `~/.openclaw/openclaw.json`. Every list below is what the model
 *actually* sees right now, not what the source suggests.
 
-**21 tools reach the model: 13 OpenClaw built-ins + 8 Astra MCP tools (44 actions).**
+**21 tools reach the model: 11 OpenClaw built-ins + 10 Astra MCP tools (53 action slots).**
 
-Changed later on 2026-08-06:
+Changed 2026-08-06 → 07:
 - `manage_music` **re-enabled** (§2) — spotifyd was never uninstalled, only stopped.
-- `web_search` moved **DuckDuckGo → local SearXNG** (§8) — DDG now IP-blocks this host.
-- The two stale live skills flagged in §5 are **fixed and synced**; all 12 now match the repo.
+- `web_search` moved **DuckDuckGo → local SearXNG** (§7) — DDG now IP-blocks this host.
+- The two stale live skills flagged in §5 are **fixed and synced**; all skills now match the repo.
+- **`manage_projects`** and **`plan_day`** added; `manage_tasks` went 4 → 10 actions with real
+  deadlines (§2). Habit streaks and two deterministic scheduler jobs added (§8).
+- **`image` and `pdf` denied** at the user's request (§3) — Astra no longer analyses image or PDF
+  content. Note `manage_photos`/`media_access` are unaffected: they list WhatsApp media metadata
+  from SQLite rather than reading the file contents.
+- The model chain was **inverted** to `gemini-flash-lite-latest` primary (§6).
+- A gitignored `tools/private/` directory can carry **per-machine tools** that are not part of this
+  repo; the registry loads it optionally, so a clone without it still builds. Anything there is
+  outside `megaTools` and so absent from the `/tools` list, and is expected to carry its own
+  authorization check. Not inventoried here by design.
 
 ---
 
@@ -20,7 +30,7 @@ Silencing or adding a tool means editing a *different* place depending on which 
 | Plane | What lives there | How to change it | Takes effect |
 |---|---|---|---|
 | **A. OpenClaw built-ins** | `read`, `web_search`, `image_generate`, … | `tools.deny` in `~/.openclaw/openclaw.json` | Hot reload, seconds |
-| **B. Astra MCP tools** | the 7 `manage_*` / `assistant_utils` | `tools/registry/mega-tools.ts` → `npm run build` | After rebuild |
+| **B. Astra MCP tools** | the `manage_*` set, `assistant_utils`, `plan_day` | `tools/registry/mega-tools.ts` → `npm run build` | After rebuild |
 | **C. Skills (prose guidance)** | *when* to use a tool | `~/.openclaw/workspace/skills/` | Next turn |
 
 > ⚠️ **Plane C is the trap.** OpenClaw loads skills from `~/.openclaw/workspace/skills/`, **not**
@@ -29,21 +39,33 @@ Silencing or adding a tool means editing a *different* place depending on which 
 
 ---
 
-## 2. Astra's own tools (plane B) — 7 live, 35 actions
+## 2. Astra's own tools (plane B) — 10 live
 
-Source: `tools/registry/mega-tools.ts`. Only these 7 are advertised; the ~15 domain modules under
+Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 domain modules under
 `tools/` are the *implementation* the mega-tools route into.
 
 | Tool | Actions | Backed by |
 |---|---|---|
-| `manage_tasks` | `add`, `list`, `complete`, `delete`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts` |
+| `manage_tasks` | `add`, `list`, `complete`, `delete`, `update`, `snooze`, `stale`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts` |
 | `manage_finances` | `add_expense`, `expense_summary`, `add_income`, `financial_overview`, `set_budget`, `list_budgets`, `budget_alerts` | `expenses.ts`, `budget.ts` |
 | `manage_calendar` | `list`, `add` | `calendar.ts` (Google, service account) |
 | `manage_habits` | `track`, `log`, `list` | `habits.ts` |
 | `manage_memory` | `propose`, `approve`, `decline` | `memory.ts` (approval-gated) |
 | `manage_notes` | `add`, `find`, `list`, `link`, `delete` | `notes.ts` (Obsidian vault) |
 | `assistant_utils` | `help`, `current_time`, `daily_status`, `speak`, `set_voice_mode`, `get_voice_mode`, `text_to_speech`, `list_whatsapp_media` | `daily-status.ts`, `voice.ts`, `whatsapp-media.ts` |
-| `manage_music` | `play`, `pause`, `next`, `previous`, `volume`, `now_playing`, `set_alarm`, `list_alarms`, `cancel_alarm` | `spotify.ts` → spotifyd (see §9) |
+| `manage_music` | `play`, `pause`, `next`, `previous`, `volume`, `now_playing`, `set_alarm`, `list_alarms`, `cancel_alarm` | `spotify.ts` → spotifyd (see §8) |
+| `manage_projects` | `add`, `list`, `status`, `breakdown`, `complete`, `delete` | `projects.ts` — progress derived from linked tasks, never stored |
+| `plan_day` | *(no action enum — one operation)* | `planner.ts` — tasks × calendar → time blocks |
+
+### Deadlines: the thing that was actually missing
+
+`tasks.date` is the **creation** date and always was — written from `new Date()` at insert. It never
+meant "when is this due". So before 2026-08-07, "what's due this week?", "what's overdue?" and any
+deadline reminder were not unimplemented, they were **unanswerable**. `due_date` (nullable — NULL
+means "someday") is what makes the filters, `deadline_watch`, and `plan_day` possible at all.
+
+`estimate_minutes` exists for `plan_day`: with no duration there is nothing to pack. Tasks without
+one are assumed 45 min and flagged `~est` rather than silently treated as accurate.
 
 ### Still switched off (code exists, commented out)
 
@@ -62,34 +84,40 @@ There is no skill for `manage_email` — write one if you re-enable it.
 
 ---
 
-## 3. OpenClaw built-ins (plane A) — 13 live
+## 3. OpenClaw built-ins (plane A) — 11 live
 
 These come from OpenClaw itself, not this repo. Silence via `tools.deny`.
 
-**Probably keep:**
+**Keeping:**
 
 | Tool | Why |
 |---|---|
 | `read` | reads files |
-| `web_search` | DuckDuckGo; the `web_search` skill depends on it |
+| `web_search` | now local SearXNG (§7); the `web_search` skill depends on it |
 | `web_fetch` | pulls real page content — the skill explicitly needs this for weather/scores |
 | `message` | sends chat messages |
-| `pdf` | reads PDFs |
-| `image` | reads/analyses images you send |
 
-**Candidates to silence — likely dead weight for a personal assistant:**
+**Already silenced 2026-08-07** (added to `tools.deny`): `image`, `pdf`. Astra no longer reads
+image or PDF *content*. It can still tell you what WhatsApp media arrived — that comes from the
+`whatsapp_media` SQLite table, not from opening the file.
+
+**Still active, still candidates to silence:**
 
 | Tool | Why silence |
 |---|---|
-| `image_generate` | you have no image-gen use case; Gemini image models burn quota fast |
-| `video_generate` | same, and far more expensive |
+| `image_generate` | no image-gen use case here, and it's the counterpart to the now-denied `image` |
+| `video_generate` | same, and far more expensive per call |
 | `music_generate` | generates *audio clips*, unrelated to Spotify playback |
 | `sessions_list` | multi-session introspection you don't use |
 | `sessions_history` | ditto |
 | `sessions_send` | lets the model message other sessions |
 | `session_status` | ditto |
 
-Silencing all 7 leaves a 6-built-in + 7-Astra surface. There is **no append syntax** for
+These three `*_generate` tools are the ones that would become a **real cost** the moment billing is
+ever enabled (§6) — Veo especially. They're refused on the free tier today, so silencing them is
+about pre-arming, not fixing a live problem.
+
+Silencing all 7 would leave a 4-built-in surface. There is **no append syntax** for
 `tools.deny` — read the array, add to it, write the whole thing back:
 
 ```bash
@@ -109,7 +137,8 @@ watch for `tool policy removed N tool(s)` in `~/Library/Logs/openclaw/gateway.lo
 
 ### Your deny list has 9 entries that match nothing
 
-`tools.deny` currently holds 27 names, but the gateway reports only **18 matched**:
+`tools.deny` holds 29 names (27 before `image`/`pdf` were added), but the gateway reported only
+**18 matched** of the original 27:
 
 > `tool policy removed 18 tool(s) via tools.deny: agents_list, apply_patch, create_goal, cron,
 > edit, exec, gateway, get_goal, nodes, process, sessions_spawn, sessions_yield, skill_workshop,
@@ -131,14 +160,14 @@ still works — voice output goes through Piper, not OpenClaw's TTS.
 
 ---
 
-## 4. Skills (plane C) — 11 live
+## 4. Skills (plane C) — 13 live
 
 Prose in `SKILL.md` telling the model *when* to reach for a tool. Loaded from
 `~/.openclaw/workspace/skills/`.
 
 | Skill | Drives | Notes |
 |---|---|---|
-| `task_management` | `manage_tasks` | |
+| `task_management` | `manage_tasks`, `plan_day` | deadlines + day planning; Hebrew triggers |
 | `expense_tracking` | `manage_finances` | NIS-aware |
 | `calendar` | `manage_calendar` | |
 | `habits` | `manage_habits` | |
@@ -146,10 +175,11 @@ Prose in `SKILL.md` telling the model *when* to reach for a tool. Loaded from
 | `memory` | `manage_memory` | has an explicit "when NOT to activate" — good pattern to copy |
 | `daily_briefing` | `assistant_utils(daily_status)` | on-demand only; the 08:00/20:00 sends are the scheduler's |
 | `help` | `assistant_utils(help)` | backs `/tools`, built live from the registry |
-| `voice` | `assistant_utils(speak, *_voice_mode)` | **stale — see §5** |
-| `web_search` | `web_search`, `web_fetch` | **stale and broken — see §5** |
+| `voice` | `assistant_utils(speak, *_voice_mode)` | fixed 2026-08-06 (was Telegram-worded) |
+| `web_search` | `web_search`, `web_fetch` | fixed 2026-08-06 (pointed at a nonexistent action) |
 | `media_access` | `assistant_utils(list_whatsapp_media)` | read-only |
-| `spotify` | `manage_music` | restored from `_disabled/` 2026-08-06 |
+| `spotify` | `manage_music` | restored from `_disabled/` 2026-08-06; Hebrew triggers |
+| `projects` | `manage_projects` | new 2026-08-07; Hebrew triggers |
 
 **Disabled** (in `skills/_disabled/`, absent from the workspace): `photo_management` — the pair
 for `manage_photos`.
@@ -158,7 +188,8 @@ for `manage_photos`.
 
 ## 5. ✅ RESOLVED — two live skills were out of date
 
-The repo has **newer** versions that were never copied to the workspace:
+Kept for the record, because it's the failure mode most likely to recur. The repo had **newer**
+versions that were never copied to the workspace:
 
 **`web_search` — actively broken.** The live copy tells the model to call
 `assistant_utils(action="web_search", query=…)`. That action **does not exist** (see §2 — the
@@ -230,11 +261,11 @@ Confirm in the console any time: <https://aistudio.google.com/usage> and
 `gemini-flash-latest` is capped at **20 requests/day**; `gemini-flash-lite-latest` is the fallback
 and has a much roomier bucket. Every `openclaw agent -m …` verification costs one request. Batch
 your checks — don't re-list tools after each individual edit. SearXNG and the Spotify Web API cost
-nothing, so §8/§9's curl checks are free.
+nothing, so §7/§8's curl checks are free.
 
 ---
 
-## 8. Web search — local SearXNG (replaced DuckDuckGo 2026-08-06)
+## 7. Web search — local SearXNG (replaced DuckDuckGo 2026-08-06)
 
 DuckDuckGo started returning bot-detection challenges to this host, so `web_search` failed with
 `"DuckDuckGo returned a bot-detection challenge."` It was not recoverable by retrying — DDG's
@@ -280,7 +311,7 @@ Test it without spending Gemini quota:
 curl -s "http://127.0.0.1:8888/search?q=test&format=json" | jq '.results | length'
 ```
 
-## 9. Spotify / music — re-enabled 2026-08-06
+## 8. Spotify / music — re-enabled 2026-08-06
 
 CLAUDE.md said spotifyd was "decommissioned". It wasn't — it was only **stopped**. Everything
 survived: brew `spotifyd 0.4.2`, `~/.config/spotifyd/spotifyd.conf`, and the cached OAuth
@@ -322,6 +353,38 @@ curl -s https://api.spotify.com/v1/me/player/devices -H "Authorization: Bearer $
 ```
 
 Requires Spotify Premium (Connect device control is a Premium feature).
+
+## 9. Proactive scheduler jobs — the free tier of features
+
+Not tools, but they're where most day-to-day value lives, and they matter for a reason worth
+stating plainly: **no model sits in their path**. They're built straight from SQLite, so they cost
+**zero Gemini quota**, cannot be rate-limited, and can't hallucinate. On a free tier that ran out
+twice on 2026-08-06, that's the difference between a feature that works and one that doesn't.
+
+9 jobs in the `schedules` table:
+
+| Job | When | Behaviour |
+|---|---|---|
+| `recurring_gen` | 07:00 daily | generates tasks from recurring templates |
+| `deadline_watch` | 07:30 daily | overdue + due-today + projects closing within 7d — **silent if nothing** |
+| `morning_briefing` | 08:00 daily | the day ahead |
+| `budget_check` | 12:00 daily | silent unless a budget is breached |
+| `email_digest` | 17:00 daily | silent if no mail |
+| `stale_task_nudge` | Sun 19:00 | undated tasks pending 3+ weeks — **silent if nothing** |
+| `evening_review` | 20:00 daily | tomorrow's agenda, spend, top task, **habit streaks** |
+| `weekly_recap` | Sat 20:30 | week in review |
+| `monthly_finance_review` | 21:00 daily | self-gates to the last day of the month |
+
+`deadline_watch` is at 07:30 deliberately: after `recurring_gen` (07:00) so this morning's generated
+tasks are included, and before the 08:00 briefing so deadlines lead the day.
+
+Adding one is a row in `schedules` plus a `case` in `runJob` — these nine are the pattern. Quiet
+hours (22:00–07:00 and Shabbat) suppress everything except `recurring_gen` and `music_alarm`.
+
+**Habit streaks**: `habits` only ever stored `last_logged_date`, which answers "did I do it today?"
+but makes streaks impossible — no history to count back through. `habit_logs` (UNIQUE per habit per
+day) fixes that. Streaks anchor on today if logged, else yesterday, otherwise every streak would
+read 0 for most of the day.
 
 ## 10. Other context the model gets (not tools)
 
