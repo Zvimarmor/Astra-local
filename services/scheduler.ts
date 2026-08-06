@@ -240,12 +240,84 @@ async function buildEveningReview(dateStr: string): Promise<string> {
         lines.push('', '✅ No pending tasks — all clear!');
     }
     if (recurringCount > 0) lines.push('', `🔄 Recurring templates active: ${recurringCount}`);
+
+    // Habit streaks. Only shown when there are habits at all, so this stays silent
+    // rather than printing an empty section for users who don't track any.
+    const habitsWithStreaks = storage.getHabitsWithStreaks();
+    if (habitsWithStreaks.length > 0) {
+        lines.push('', '🔥 Habits:');
+        for (const h of habitsWithStreaks) {
+            const mark = h.done_today ? '✅' : '⬜';
+            const streak = h.streak > 1 ? ` — ${h.streak}-day streak` : (h.streak === 1 ? ' — day 1' : '');
+            lines.push(`  ${mark} ${h.name}${streak}`);
+        }
+    }
+
     lines.push('', 'Good night! 😴');
     return lines.join('\n');
 }
 
 function rank(priority: string): number {
     return ({ high: 0, medium: 1, low: 2 } as Record<string, number>)[priority] ?? 1;
+}
+
+/**
+ * Deadline watch — what's overdue or due today/soon.
+ *
+ * Silent when there is nothing to report (returns null), so it only ever
+ * interrupts when a deadline actually needs attention. Fully deterministic:
+ * built straight from SQLite with no model in the path, which also means it
+ * costs no Gemini quota and can't be rate-limited.
+ */
+function buildDeadlineWatch(dateStr: string): string | null {
+    const overdue = storage.getPendingTasks('overdue');
+    const dueToday = storage.getPendingTasks('today').filter((t: any) => t.due_date === dateStr);
+    const projects = storage.getUpcomingProjectDeadlines(7);
+
+    if (!overdue.length && !dueToday.length && !projects.length) return null;
+
+    const lines: string[] = [`⏰ Deadlines — ${dateStr}`, ''];
+
+    if (overdue.length) {
+        lines.push(`🔴 Overdue (${overdue.length}):`);
+        for (const t of overdue.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (was due ${t.due_date})`);
+        if (overdue.length > 10) lines.push(`  …and ${overdue.length - 10} more`);
+        lines.push('');
+    }
+    if (dueToday.length) {
+        lines.push(`📌 Due today (${dueToday.length}):`);
+        for (const t of dueToday) {
+            const est = t.estimate_minutes ? ` ~${t.estimate_minutes}m` : '';
+            lines.push(`  • ${t.id} ${t.title}${est}`);
+        }
+        lines.push('');
+    }
+    if (projects.length) {
+        lines.push('🎯 Projects closing in:');
+        for (const p of projects) {
+            const left = p.days_left === null ? '' :
+                p.days_left < 0 ? ` — ${Math.abs(p.days_left)}d overdue` :
+                p.days_left === 0 ? ' — due today' : ` — ${p.days_left}d left`;
+            lines.push(`  • ${p.name} (${p.done}/${p.total} done)${left}`);
+        }
+    }
+    return lines.join('\n').trim();
+}
+
+/**
+ * Stale-task nudge — undated tasks that have been pending a long time.
+ * Weekly, and silent when there's nothing stale. The point is to force a
+ * decision (schedule it or drop it) rather than let the list rot.
+ */
+function buildStaleTaskNudge(): string | null {
+    const stale = storage.getStaleTasks(21);
+    if (!stale.length) return null;
+
+    const lines: string[] = [`🧹 ${stale.length} task${stale.length === 1 ? '' : 's'} sitting with no deadline for 3+ weeks:`, ''];
+    for (const t of stale.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (added ${t.date})`);
+    if (stale.length > 10) lines.push(`  …and ${stale.length - 10} more`);
+    lines.push('', 'Worth giving these a date or dropping them?');
+    return lines.join('\n');
 }
 
 function buildBudgetAlert(): string | null {
@@ -341,6 +413,14 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             return { status: 'sent', message: await buildMorningBriefing(n.dateStr) };
         case 'evening_review':
             return { status: 'sent', message: await buildEveningReview(n.dateStr) };
+        case 'deadline_watch': {
+            const msg = buildDeadlineWatch(n.dateStr);
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
+        case 'stale_task_nudge': {
+            const msg = buildStaleTaskNudge();
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
         case 'budget_check': {
             const msg = buildBudgetAlert();
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };

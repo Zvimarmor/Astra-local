@@ -10,6 +10,7 @@ import { memoryTools } from '../memory';
 import { whatsappMediaTools } from '../whatsapp-media';
 import { voiceTools } from '../voice';
 import { notesTools } from '../notes';
+import { projectTools } from '../projects';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -66,7 +67,8 @@ function badAction(action: string, valid: string[]): Record<string, any> {
  */
 interface HelpEntry { category: string; blurb: string; example: string; }
 const HELP_META: Record<string, HelpEntry> = {
-    manage_tasks: { category: '📋 Productivity', blurb: 'to-dos & recurring reminders', example: '"Add a task to call the bank" · "Remind me every Monday to do laundry"' },
+    manage_tasks: { category: '📋 Productivity', blurb: 'to-dos, deadlines & recurring reminders', example: '"Add a task to call the bank by Friday" · "What\'s overdue?"' },
+    manage_projects: { category: '📋 Productivity', blurb: 'projects/missions with progress & target dates', example: '"New mission: Dynamics exam by Aug 20" · "How\'s the exam project going?"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
@@ -110,17 +112,27 @@ export const megaTools = {
         name: 'manage_tasks',
         description:
             "Manage the user's to-do list and recurring task templates. " +
-            "Choose action: 'add' (needs title, optional priority), 'list', " +
+            "Choose action: 'add' (needs title; optional priority, due_date, estimate_minutes, project), " +
+            "'list' (optional filter: all/today/week/overdue/someday), " +
             "'complete' (needs task_id), 'delete' (needs task_id), " +
+            "'update' (task_id + any field to change), 'snooze' (task_id + due_date), " +
+            "'stale' (long-pending undated tasks), " +
             "'add_recurring' (needs title + frequency; weekly needs day_of_week 0-6, monthly needs day_of_month 1-31), " +
-            "'list_recurring', 'remove_recurring' (needs recurring_id).",
+            "'list_recurring', 'remove_recurring' (needs recurring_id). " +
+            "ALWAYS pass due_date as YYYY-MM-DD — resolve words like 'Friday' or 'next week' to a real date yourself.",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['add', 'list', 'complete', 'delete', 'add_recurring', 'list_recurring', 'remove_recurring'], description: 'Which task operation to perform' },
-                title: { type: 'string', description: 'Task description (for add / add_recurring)' },
+                action: { type: 'string', enum: ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring'], description: 'Which task operation to perform' },
+                title: { type: 'string', description: 'Task description (for add / add_recurring / update)' },
                 priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Task priority (default medium)' },
-                task_id: { type: 'string', description: 'Task ID like T1, or part of the title (for complete / delete)' },
+                task_id: { type: 'string', description: 'Task ID like T1, or part of the title (for complete / delete / update / snooze)' },
+                due_date: { type: 'string', description: "Deadline as YYYY-MM-DD (for add / update / snooze). 'clear' removes it." },
+                estimate_minutes: { type: 'number', description: 'Rough minutes the task needs — enables day planning' },
+                project: { type: 'string', description: 'Project/mission name or id to file the task under' },
+                notes: { type: 'string', description: 'Extra context on the task' },
+                filter: { type: 'string', enum: ['all', 'today', 'week', 'overdue', 'someday'], description: 'Which pending tasks to list (default all)' },
+                days: { type: 'number', description: "For 'stale': how old counts as stale (default 21)" },
                 frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Recurrence (for add_recurring)' },
                 day_of_week: { type: 'number', description: 'Weekly recurrence day: 0=Sunday .. 6=Saturday' },
                 day_of_month: { type: 'number', description: 'Monthly recurrence day: 1-31' },
@@ -130,14 +142,66 @@ export const megaTools = {
         },
         execute: async (a: any = {}) => {
             switch (a.action) {
-                case 'add': return call(taskTools as DomainMap, 'add_task', { title: a.title, priority: a.priority });
-                case 'list': return call(taskTools as DomainMap, 'list_tasks', {});
+                case 'add': return call(taskTools as DomainMap, 'add_task', { title: a.title, priority: a.priority, due_date: a.due_date, estimate_minutes: a.estimate_minutes, project: a.project, notes: a.notes });
+                case 'list': return call(taskTools as DomainMap, 'list_tasks', { filter: a.filter });
                 case 'complete': return call(taskTools as DomainMap, 'complete_task', { taskId: a.task_id });
                 case 'delete': return call(taskTools as DomainMap, 'delete_task', { taskId: a.task_id });
+                case 'update': return call(taskTools as DomainMap, 'update_task', { taskId: a.task_id, title: a.title, priority: a.priority, due_date: a.due_date, estimate_minutes: a.estimate_minutes, project: a.project, notes: a.notes });
+                case 'snooze': return call(taskTools as DomainMap, 'snooze_task', { taskId: a.task_id, until: a.due_date });
+                case 'stale': return call(taskTools as DomainMap, 'stale_tasks', { days: a.days });
                 case 'add_recurring': return call(recurringTaskTools as DomainMap, 'add_recurring_task', { title: a.title, priority: a.priority, frequency: a.frequency, day_of_week: a.day_of_week, day_of_month: a.day_of_month });
                 case 'list_recurring': return call(recurringTaskTools as DomainMap, 'list_recurring_tasks', {});
                 case 'remove_recurring': return call(recurringTaskTools as DomainMap, 'remove_recurring_task', { id: a.recurring_id });
-                default: return badAction(a.action, ['add', 'list', 'complete', 'delete', 'add_recurring', 'list_recurring', 'remove_recurring']);
+                default: return badAction(a.action, ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring']);
+            }
+        },
+    },
+
+    // ─── 1b. Projects / "missions" (objectives that own tasks) ────────
+    manage_projects: {
+        name: 'manage_projects',
+        description:
+            "Manage projects (also called missions) — a named objective that tasks are filed under, with a target date and progress. " +
+            "Choose action: 'add' (needs name; optional target_date, description), 'list', " +
+            "'status' (needs project — shows progress + remaining tasks), " +
+            "'breakdown' (needs project + tasks array — split a mission into concrete steps), " +
+            "'complete' (needs project), 'delete' (needs project; its tasks are kept). " +
+            "Use this when the user talks about a bigger goal, exam, or multi-step objective rather than a single to-do.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['add', 'list', 'status', 'breakdown', 'complete', 'delete'], description: 'Which project operation to perform' },
+                name: { type: 'string', description: 'Project name (for add)' },
+                project: { type: 'string', description: 'Project name or numeric id (for status/breakdown/complete/delete)' },
+                target_date: { type: 'string', description: 'Target date as YYYY-MM-DD (for add)' },
+                description: { type: 'string', description: 'What finishing this project means (for add)' },
+                include_completed: { type: 'boolean', description: 'For list: include finished projects' },
+                tasks: {
+                    type: 'array',
+                    description: 'For breakdown: the steps to create, in order.',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string', description: 'Step description' },
+                            due_date: { type: 'string', description: 'YYYY-MM-DD, optional' },
+                            estimate_minutes: { type: 'number', description: 'Rough minutes, optional' },
+                            priority: { type: 'string', enum: ['high', 'medium', 'low'] },
+                        },
+                        required: ['title'],
+                    },
+                },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'add': return call(projectTools as DomainMap, 'add_project', { name: a.name || a.project, target_date: a.target_date, description: a.description });
+                case 'list': return call(projectTools as DomainMap, 'list_projects', { include_completed: a.include_completed });
+                case 'status': return call(projectTools as DomainMap, 'project_status', { project: a.project || a.name });
+                case 'breakdown': return call(projectTools as DomainMap, 'breakdown_project', { project: a.project || a.name, tasks: a.tasks });
+                case 'complete': return call(projectTools as DomainMap, 'complete_project', { project: a.project || a.name });
+                case 'delete': return call(projectTools as DomainMap, 'delete_project', { project: a.project || a.name });
+                default: return badAction(a.action, ['add', 'list', 'status', 'breakdown', 'complete', 'delete']);
             }
         },
     },

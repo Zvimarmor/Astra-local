@@ -154,6 +154,69 @@ db.exec(`
     }
 }
 
+// Migration (2026-08-07): day-planning columns on tasks.
+//
+// `tasks.date` is the CREATION date and always has been — it is written from
+// `new Date()` at insert and never means "when is this due". Adding a real
+// `due_date` is what makes deadline questions ("what's due this week?", "am I
+// behind?") answerable at all; before this they were impossible, not just
+// unimplemented. `date` is left alone so existing rows/readers keep working.
+//
+// NULL due_date = "someday", deliberately: most tasks don't have a deadline and
+// forcing one would make the overdue list meaningless.
+{
+    const cols = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+    const have = new Set(cols.map(c => c.name));
+    if (!have.has('due_date')) db.exec('ALTER TABLE tasks ADD COLUMN due_date TEXT');
+    if (!have.has('estimate_minutes')) db.exec('ALTER TABLE tasks ADD COLUMN estimate_minutes INTEGER');
+    if (!have.has('project_id')) db.exec('ALTER TABLE tasks ADD COLUMN project_id INTEGER');
+    if (!have.has('notes')) db.exec('ALTER TABLE tasks ADD COLUMN notes TEXT');
+}
+
+// Projects ("missions") — a named objective that owns tasks. Progress is always
+// derived from the linked tasks rather than stored, so it can't drift out of sync
+// with reality.
+db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        target_date TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date) WHERE due_date IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id) WHERE project_id IS NOT NULL;
+`);
+
+// Habit log history. The `habits` table only ever stored `last_logged_date`, which
+// is enough to answer "did I do it today?" but makes streaks impossible — there is
+// no history to count back through. One row per habit per day; UNIQUE makes a
+// double-log the same day a no-op rather than a corrupt streak.
+db.exec(`
+    CREATE TABLE IF NOT EXISTS habit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        habit_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        logged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(habit_id, date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_habit_logs_habit ON habit_logs(habit_id, date DESC);
+`);
+
+// Backfill habit_logs from the single last_logged_date each habit carries, so an
+// existing habit shows a streak of 1 today instead of 0 (which would read as
+// "you broke your streak" the first time this ships).
+{
+    const rows = db.prepare('SELECT id, last_logged_date FROM habits WHERE last_logged_date IS NOT NULL').all() as { id: number; last_logged_date: string }[];
+    const ins = db.prepare('INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)');
+    const tx = db.transaction(() => { for (const r of rows) ins.run(r.id, r.last_logged_date); });
+    if (rows.length) tx();
+}
+
 // Ensure the analytical jobs exist (added after the original 5-job seed, so this
 // must run as an idempotent "insert if missing" rather than the empty-table seed
 // above — existing DBs already have rows). LLM-phrased, deterministic fallback.
@@ -167,9 +230,16 @@ db.exec(`
     // monthly_finance_review: scheduled daily 21:00; the builder self-gates to the LAST
     //   day of the month so the month-to-date overview covers the full ending month
     //   (no day_of_month column needed).
+    // deadline_watch: 07:30 daily, just after recurring_gen (07:00) so tasks
+    //   generated this morning are already in the list, and before the 08:00
+    //   briefing so deadlines lead the day. Self-silences when nothing is due.
+    // stale_task_nudge: Sunday 19:00 — start of the Israeli work week, and a
+    //   sane moment to prune. Also self-silences.
     const extras: [string, number, number, string][] = [
         ['weekly_recap', 20, 30, '6'],
         ['monthly_finance_review', 21, 0, 'daily'],
+        ['deadline_watch', 7, 30, 'daily'],
+        ['stale_task_nudge', 19, 0, '0'],
     ];
     const tx = db.transaction(() => {
         for (const [job, h, m, days] of extras) ensure.run(job, h, m, days, job);
@@ -225,17 +295,150 @@ function getNextTaskId(): string {
     return `T${num + 1}`;
 }
 
-export function addTask(title: string, priority: string = 'medium'): { id: string; title: string } {
+/** Today's date in the configured timezone, as YYYY-MM-DD. */
+export function todayStr(): string {
+    return new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
+}
+
+/** YYYY-MM-DD `days` from today (negative for the past), in the configured tz. */
+export function dateOffsetStr(days: number): string {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toLocaleDateString('sv-SE', { timeZone: config.timezone });
+}
+
+export interface TaskFields {
+    dueDate?: string | null;
+    estimateMinutes?: number | null;
+    projectId?: number | null;
+    notes?: string | null;
+}
+
+export interface TaskRow {
+    id: string;
+    date: string;
+    title: string;
+    status: string;
+    priority: string;
+    due_date: string | null;
+    estimate_minutes: number | null;
+    project_id: number | null;
+    notes: string | null;
+    project_name?: string | null;
+}
+
+export function addTask(title: string, priority: string = 'medium', fields: TaskFields = {}): { id: string; title: string } {
     const id = getNextTaskId();
-    const date = new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
-    const stmt = db.prepare('INSERT INTO tasks (id, date, title, status, priority) VALUES (?, ?, ?, ?, ?)');
-    stmt.run(id, date, title, 'Pending', priority);
+    const stmt = db.prepare(
+        `INSERT INTO tasks (id, date, title, status, priority, due_date, estimate_minutes, project_id, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    stmt.run(
+        id, todayStr(), title, 'Pending', priority,
+        fields.dueDate ?? null, fields.estimateMinutes ?? null, fields.projectId ?? null, fields.notes ?? null
+    );
     return { id, title };
 }
 
-export function getPendingTasks(): { id: string; date: string; title: string; status: string; priority: string }[] {
-    const stmt = db.prepare("SELECT id, date, title, status, priority FROM tasks WHERE status = 'Pending' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)");
-    return stmt.all() as any[];
+export type TaskFilter = 'all' | 'today' | 'week' | 'overdue' | 'someday';
+
+/**
+ * Pending tasks, optionally filtered by deadline window.
+ *
+ * Ordering is deliberate: overdue and due-soon first, undated ("someday") last,
+ * then high→low priority. The old ordering was by numeric task id, which meant
+ * the list order carried no information about what actually needed doing.
+ */
+export function getPendingTasks(filter: TaskFilter = 'all'): TaskRow[] {
+    const today = todayStr();
+    let where = "t.status = 'Pending'";
+    const params: any[] = [];
+
+    if (filter === 'today') {
+        where += ' AND t.due_date IS NOT NULL AND t.due_date <= ?';
+        params.push(today);
+    } else if (filter === 'week') {
+        where += ' AND t.due_date IS NOT NULL AND t.due_date <= ?';
+        params.push(dateOffsetStr(7));
+    } else if (filter === 'overdue') {
+        where += ' AND t.due_date IS NOT NULL AND t.due_date < ?';
+        params.push(today);
+    } else if (filter === 'someday') {
+        where += ' AND t.due_date IS NULL';
+    }
+
+    const stmt = db.prepare(
+        `SELECT t.id, t.date, t.title, t.status, t.priority, t.due_date,
+                t.estimate_minutes, t.project_id, t.notes, p.name AS project_name
+         FROM tasks t
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE ${where}
+         ORDER BY (t.due_date IS NULL),
+                  t.due_date ASC,
+                  CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                  CAST(SUBSTR(t.id, 2) AS INTEGER)`
+    );
+    return stmt.all(...params) as TaskRow[];
+}
+
+/**
+ * Resolve a user-supplied "T3" / partial-title string to a real task id.
+ * complete/delete each rolled their own version of this; update and snooze made
+ * it four, so it's shared now. Pending-only, matching the previous behaviour.
+ */
+export function resolveTaskId(taskId: string): string | null {
+    const search = String(taskId || '').toLowerCase();
+    if (!search) return null;
+
+    const byId = db.prepare("SELECT id FROM tasks WHERE LOWER(id) = ? AND status = 'Pending'").get(search) as { id: string } | undefined;
+    if (byId) return byId.id;
+
+    const byTitle = db.prepare("SELECT id FROM tasks WHERE LOWER(title) LIKE ? AND status = 'Pending' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER) LIMIT 1").get(`%${search}%`) as { id: string } | undefined;
+    return byTitle ? byTitle.id : null;
+}
+
+/** Patch any subset of a task's editable fields. Returns the resolved id. */
+export function updateTask(
+    taskId: string,
+    patch: { title?: string; priority?: string } & TaskFields
+): string | null {
+    const id = resolveTaskId(taskId);
+    if (!id) return null;
+
+    const sets: string[] = [];
+    const params: any[] = [];
+    const push = (col: string, val: any) => { sets.push(`${col} = ?`); params.push(val); };
+
+    if (patch.title !== undefined) push('title', patch.title);
+    if (patch.priority !== undefined) push('priority', patch.priority);
+    if (patch.dueDate !== undefined) push('due_date', patch.dueDate);
+    if (patch.estimateMinutes !== undefined) push('estimate_minutes', patch.estimateMinutes);
+    if (patch.projectId !== undefined) push('project_id', patch.projectId);
+    if (patch.notes !== undefined) push('notes', patch.notes);
+
+    if (!sets.length) return id;   // nothing to change, but the task exists
+    params.push(id);
+    db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    return id;
+}
+
+/** Count of pending tasks whose due date has passed. Cheap enough for briefings. */
+export function getOverdueCount(): number {
+    const row = db.prepare(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'Pending' AND due_date IS NOT NULL AND due_date < ?"
+    ).get(todayStr()) as { n: number };
+    return row.n;
+}
+
+/** Pending tasks untouched for `days` and with no deadline — candidates to drop. */
+export function getStaleTasks(days: number = 21): TaskRow[] {
+    const stmt = db.prepare(
+        `SELECT id, date, title, status, priority, due_date, estimate_minutes, project_id, notes
+         FROM tasks
+         WHERE status = 'Pending' AND due_date IS NULL AND date <= ?
+         ORDER BY date ASC`
+    );
+    return stmt.all(dateOffsetStr(-days)) as TaskRow[];
 }
 
 export function completeTask(taskId: string): boolean {
@@ -277,15 +480,162 @@ export function addHabit(name: string, frequency: string): void {
 }
 
 export function logHabit(name: string): boolean {
-    const today = new Date().toLocaleDateString('sv-SE', { timeZone: config.timezone });
-    const stmt = db.prepare('UPDATE habits SET last_logged_date = ? WHERE name = ?');
-    const info = stmt.run(today, name);
-    return info.changes > 0;
+    const today = todayStr();
+    const habit = db.prepare('SELECT id FROM habits WHERE name = ?').get(name) as { id: number } | undefined;
+    if (!habit) return false;
+
+    // Write both: `last_logged_date` keeps every existing reader working, and the
+    // habit_logs row is what makes streaks computable.
+    const tx = db.transaction(() => {
+        db.prepare('UPDATE habits SET last_logged_date = ? WHERE id = ?').run(today, habit.id);
+        db.prepare('INSERT OR IGNORE INTO habit_logs (habit_id, date) VALUES (?, ?)').run(habit.id, today);
+    });
+    tx();
+    return true;
 }
 
 export function getHabits(): { name: string; frequency: string; last_logged_date: string | null }[] {
     const stmt = db.prepare('SELECT name, frequency, last_logged_date FROM habits');
     return stmt.all() as any[];
+}
+
+/**
+ * Current consecutive-day streak for a habit.
+ *
+ * Counts back from today, and tolerates "not logged yet today" by starting at
+ * yesterday — otherwise every streak would read as 0 for most of the day and the
+ * evening review would look like it had just been broken.
+ * Daily habits only; weekly/monthly ones return the raw log count instead, since
+ * "consecutive days" isn't meaningful for them.
+ */
+export function getHabitStreak(habitId: number, frequency: string = 'daily'): number {
+    const dates = (db.prepare(
+        'SELECT date FROM habit_logs WHERE habit_id = ? ORDER BY date DESC LIMIT 400'
+    ).all(habitId) as { date: string }[]).map(r => r.date);
+
+    if (!dates.length) return 0;
+    if (frequency !== 'daily') return dates.length;
+
+    const have = new Set(dates);
+    // Anchor on today if logged, else yesterday (today may simply not have happened yet).
+    let cursor = have.has(todayStr()) ? 0 : (have.has(dateOffsetStr(-1)) ? -1 : null);
+    if (cursor === null) return 0;
+
+    let streak = 0;
+    while (have.has(dateOffsetStr(cursor))) { streak++; cursor--; }
+    return streak;
+}
+
+/** Habits with today's completion state and current streak — for reviews/briefings. */
+export function getHabitsWithStreaks(): {
+    id: number; name: string; frequency: string; last_logged_date: string | null;
+    done_today: boolean; streak: number;
+}[] {
+    const rows = db.prepare('SELECT id, name, frequency, last_logged_date FROM habits').all() as
+        { id: number; name: string; frequency: string; last_logged_date: string | null }[];
+    const today = todayStr();
+    return rows.map(h => ({
+        ...h,
+        done_today: h.last_logged_date === today,
+        streak: getHabitStreak(h.id, h.frequency),
+    }));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  PROJECTS ("missions") — a named objective that owns tasks
+// ═══════════════════════════════════════════════════════════════════
+
+export interface ProjectRow {
+    id: number;
+    name: string;
+    description: string | null;
+    target_date: string | null;
+    status: string;
+    total: number;
+    done: number;
+    days_left: number | null;
+}
+
+export function addProject(name: string, targetDate?: string | null, description?: string | null): { id: number; name: string } {
+    const info = db.prepare(
+        'INSERT INTO projects (name, target_date, description) VALUES (?, ?, ?)'
+    ).run(name, targetDate ?? null, description ?? null);
+    return { id: Number(info.lastInsertRowid), name };
+}
+
+/** Resolve "3" / partial-name to a project id. Mirrors resolveTaskId's behaviour. */
+export function resolveProjectId(ref: string | number): number | null {
+    if (typeof ref === 'number' && Number.isFinite(ref)) {
+        const row = db.prepare('SELECT id FROM projects WHERE id = ?').get(ref) as { id: number } | undefined;
+        return row ? row.id : null;
+    }
+    const s = String(ref || '').trim().toLowerCase();
+    if (!s) return null;
+
+    if (/^\d+$/.test(s)) {
+        const row = db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(s)) as { id: number } | undefined;
+        if (row) return row.id;
+    }
+    const row = db.prepare("SELECT id FROM projects WHERE LOWER(name) LIKE ? ORDER BY (status = 'active') DESC, id DESC LIMIT 1")
+        .get(`%${s}%`) as { id: number } | undefined;
+    return row ? row.id : null;
+}
+
+/**
+ * Projects with task-derived progress. `total`/`done` are computed from the
+ * linked tasks on every read rather than stored, so progress can't drift out of
+ * sync when a task is completed or deleted by another code path.
+ */
+export function getProjects(includeCompleted: boolean = false): ProjectRow[] {
+    const rows = db.prepare(
+        `SELECT p.id, p.name, p.description, p.target_date, p.status,
+                COUNT(t.id) AS total,
+                SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) AS done
+         FROM projects p
+         LEFT JOIN tasks t ON t.project_id = p.id
+         ${includeCompleted ? '' : "WHERE p.status = 'active'"}
+         GROUP BY p.id
+         ORDER BY (p.target_date IS NULL), p.target_date ASC, p.id ASC`
+    ).all() as any[];
+
+    const today = todayStr();
+    return rows.map(r => ({
+        ...r,
+        done: Number(r.done || 0),
+        total: Number(r.total || 0),
+        days_left: r.target_date
+            ? Math.round((new Date(r.target_date + 'T00:00:00').getTime() - new Date(today + 'T00:00:00').getTime()) / 86400000)
+            : null,
+    }));
+}
+
+export function completeProject(ref: string | number): boolean {
+    const id = resolveProjectId(ref);
+    if (id === null) return false;
+    db.prepare("UPDATE projects SET status = 'completed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+    return true;
+}
+
+/** Delete a project. Its tasks survive, orphaned back to "no project". */
+export function deleteProject(ref: string | number): boolean {
+    const id = resolveProjectId(ref);
+    if (id === null) return false;
+    const tx = db.transaction(() => {
+        db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(id);
+        db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    });
+    tx();
+    return true;
+}
+
+/** Projects with a target date inside `days`, still having unfinished tasks. */
+export function getUpcomingProjectDeadlines(days: number = 7): ProjectRow[] {
+    const horizon = dateOffsetStr(days);
+    const today = todayStr();
+    return getProjects(false).filter(p =>
+        p.target_date !== null && p.target_date <= horizon && p.done < p.total ||
+        (p.target_date !== null && p.target_date < today && p.total === 0)
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
