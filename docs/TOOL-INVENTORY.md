@@ -4,7 +4,7 @@
 server (`tools/list`), and `~/.openclaw/openclaw.json`. Every list below is what the model
 *actually* sees right now, not what the source suggests.
 
-**21 tools reach the model: 11 OpenClaw built-ins + 10 Astra MCP tools (53 action slots).**
+**Tools reaching the model: 11 OpenClaw built-ins + 10 Astra MCP tools (53 action slots).**
 
 Changed 2026-08-06 → 07:
 - `manage_music` **re-enabled** (§2) — spotifyd was never uninstalled, only stopped.
@@ -12,8 +12,8 @@ Changed 2026-08-06 → 07:
 - The two stale live skills flagged in §5 are **fixed and synced**; all skills now match the repo.
 - **`manage_projects`** and **`plan_day`** added; `manage_tasks` went 4 → 10 actions with real
   deadlines (§2). Habit streaks and two deterministic scheduler jobs added (§8).
-- **`image` and `pdf` denied** at the user's request (§3) — Astra no longer analyses image or PDF
-  content. Note `manage_photos`/`media_access` are unaffected: they list WhatsApp media metadata
+- **`image` denied** at the user's request (§3) — Astra no longer analyses image content. The
+  three `*_generate` tools could NOT be removed this way; see §10 for why. Note `manage_photos`/`media_access` are unaffected: they list WhatsApp media metadata
   from SQLite rather than reading the file contents.
 - The model chain was **inverted** to `gemini-flash-lite-latest` primary (§6).
 - A gitignored `tools/private/` directory can carry **per-machine tools** that are not part of this
@@ -97,43 +97,41 @@ These come from OpenClaw itself, not this repo. Silence via `tools.deny`.
 | `web_fetch` | pulls real page content — the skill explicitly needs this for weather/scores |
 | `message` | sends chat messages |
 
-**Already silenced 2026-08-07** (added to `tools.deny`): `image`, `pdf`. Astra no longer reads
-image or PDF *content*. It can still tell you what WhatsApp media arrived — that comes from the
-`whatsapp_media` SQLite table, not from opening the file.
+**Silenced 2026-08-07:** `image` — Astra no longer analyses image content. Confirmed in the
+gateway's `tool policy removed N tool(s)` line, which lists exactly what matched. `manage_photos` /
+`media_access` are unaffected: they read WhatsApp media metadata from the `whatsapp_media` SQLite
+table, not the files.
 
-**Still active, still candidates to silence:**
+### ⚠️ `tools.deny` does NOT govern the media-generation tools
 
-| Tool | Why silence |
-|---|---|
-| `image_generate` | no image-gen use case here, and it's the counterpart to the now-denied `image` |
-| `video_generate` | same, and far more expensive per call |
-| `music_generate` | generates *audio clips*, unrelated to Spotify playback |
-| `sessions_list` | multi-session introspection you don't use |
-| `sessions_history` | ditto |
-| `sessions_send` | lets the model message other sessions |
-| `session_status` | ditto |
+`image_generate`, `video_generate` and `music_generate` were all added to `tools.deny`, the gateway
+was restarted, and **all three survived**. The policy log reported **19 matched** entries with none
+of them among it. Per the OpenClaw docs these tools auto-register whenever *any* provider API key is
+present — and the Gemini key is the engine, so the trigger can't be removed.
 
-These three `*_generate` tools are the ones that would become a **real cost** the moment billing is
-ever enabled (§6) — Veo especially. They're refused on the free tier today, so silencing them is
-about pre-arming, not fixing a live problem.
+`tools.allow` would exclude them, but it is a live hazard here: the gateway log for 2026-07-03 shows
+a previous `tools.allow` attempt that stripped **all 10 Astra tools**. Not worth it — see §10 for
+why the prompt-size saving is ~2% and unmeasurable, and §6 for why they can't bill you on the free
+tier (Veo returns 429, Imagen 404).
 
-Silencing all 7 would leave a 4-built-in surface. There is **no append syntax** for
-`tools.deny` — read the array, add to it, write the whole thing back:
+Untested candidates, if you ever want to try: `sessions_list`, `sessions_history`, `sessions_send`,
+`session_status` — multi-session introspection that isn't used here.
+
+### How to change `tools.deny` at all
+
+There is **no append syntax** — read the array, add to it, write the whole thing back:
 
 ```bash
-NEW=$(openclaw config get tools.deny | jq -c '. + [
-  "image_generate","video_generate","music_generate",
-  "sessions_list","sessions_history","sessions_send","session_status"
-] | unique')
-
+NEW=$(openclaw config get tools.deny | jq -c '. + ["some_tool"] | unique')
 openclaw config set tools.deny "$NEW" --dry-run   # validate first
 openclaw config set tools.deny "$NEW"
 ```
 
-Verified working with `--dry-run` on 2026-08-06. The gateway hot-reloads `tools.deny` in seconds —
-watch for `tool policy removed N tool(s)` in `~/Library/Logs/openclaw/gateway.log`, and check that
-`N` went up by the number you added. That log line is free; confirming via
-`openclaw agent -m "list only your tool names"` costs a Gemini request (see §6).
+Verified working with `--dry-run`. `tools.deny` hot-reloads in seconds, but **verify by the
+`tool policy removed N tool(s): … ; matched …` line** in `~/Library/Logs/openclaw/gateway.log` —
+that `matched` list is authoritative, and it is how the generate-tool failure above was caught. Note
+the log line only appears when an agent turn runs, not at startup. Asking the model to list its own
+tools costs a Gemini request and is less reliable than the log.
 
 ### Your deny list has 9 entries that match nothing
 
@@ -386,7 +384,47 @@ but makes streaks impossible — no history to count back through. `habit_logs` 
 day) fixes that. Streaks anchor on today if logged, else yesterday, otherwise every streak would
 read 0 for most of the day.
 
-## 10. Other context the model gets (not tools)
+## 10. Latency and context — what actually moves the needle
+
+Measured 2026-08-07, because the intuitive answers are wrong here.
+
+**Trimming tools does almost nothing.** All Astra MCP tool schemas together are **12,107 bytes
+≈ 3,000 tokens**. The WhatsApp session was carrying **44k tokens** of history. So removing two or
+three tools shaves ~2% off the prompt — unmeasurable. `thinking=off` vs `thinking=medium` on a
+trivial turn measured **3.23s vs 3.18s**, i.e. no difference (flash-lite doesn't spend reasoning
+tokens on a trivial prompt anyway). And most of that ~3.2s is `openclaw agent` CLI startup, which
+**real chat messages never pay** — they hit the already-running gateway.
+
+**`image_generate` / `video_generate` / `music_generate` cannot be removed via `tools.deny`.**
+Confirmed empirically: all three were added to the deny list and survived a gateway restart, and the
+policy log reported only **19 matched** entries with none of them among it. Per the docs they
+auto-register whenever any provider API key exists — and the Gemini key is the engine, so it can't
+be removed. `tools.allow` would work but is dangerous: an earlier `tools.allow` attempt in this
+config stripped **all 10 Astra tools** (visible in the gateway log for 2026-07-03). Not worth it for
+a 2% prompt saving, and they're refused on the free tier anyway (§6).
+
+**Session history is not needed for anything functional.** Verified: the scheduler's ~18 data calls
+all go to SQLite (`getPendingTasks`, `getHabitsWithStreaks`, `checkBudgetAlerts`, …) and never read
+chat history; Astra's own `messages` table is **empty and `getRecentHistory()` is never called
+outside `storage.ts`** (dead code); and everything durable lives in SQLite, the vault, or
+`knowledge/learned_facts.md`. History only buys conversational continuity.
+
+Note the free tier caps **requests per day, not tokens**, so a long session costs no quota — it just
+grows prefill.
+
+What is now configured to keep it bounded:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `agents.defaults.contextPruning` | `{mode: "cache-ttl", ttl: "5m"}` | trims oversized **tool results** in memory; conversation text untouched, transcript not rewritten |
+| `session.reset` | `{mode: "daily", atHour: 4}` | fresh session each day at 04:00 — inside quiet hours, before the 07:00 jobs |
+| `session.maintenance` | `{mode: "enforce", pruneAfter: "14d", maxEntries: 100}` | prunes the session **store** (old entries + orphaned artifacts) |
+
+Force a cleanup now with `openclaw sessions cleanup --enforce` (one run pruned 1,038 unreferenced
+artifacts). Revert the pruning with
+`openclaw config set agents.defaults.contextPruning '{"mode":"off"}'`.
+
+## 11. Other context the model gets (not tools)
 
 - `~/.openclaw/workspace/` — `SOUL.md`, `IDENTITY.md`, `USER.md`, `AGENTS.md`, `HEARTBEAT.md`,
   `TOOLS.md` (the last is an empty OpenClaw template — a natural home for device/voice specifics).
