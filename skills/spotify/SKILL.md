@@ -5,6 +5,24 @@
 - User says: "next", "skip", "previous", "go back"
 - User says: "turn it up/down", "set volume to X", "louder", "quieter"
 - User asks: "what's playing?", "what song is this?"
+- **Hebrew (the user usually writes in Hebrew — treat these as equivalent):**
+  - play / put on → "תנגן", "תנגני", "שים", "שימי", "תשמיע", "תשמיעי", "נגן", "תעלה שיר", "בוא נשמע"
+  - music / song → "מוזיקה", "שיר", "אלבום", "פלייליסט", "פודקאסט", "ספוטיפיי"
+  - pause / stop → "תעצור", "עצור", "תפסיק", "השתק"
+  - resume → "תמשיך", "המשך"
+  - next / previous → "הבא", "השיר הבא", "תדלג", "הקודם", "חזור אחורה"
+  - volume → "תגביר", "תחליש", "יותר חזק", "יותר חלש", "ווליום"
+  - what's playing → "מה מתנגן", "מה השיר הזה", "מה שומעים"
+  - alarm → "תעיר אותי", "שעון מעורר", "תנגן לי ב..."
+
+## Capability — answer YES
+
+You **do** have working Spotify control. If the user asks whether you can play music
+("אתה יכול לנגן?", "can you play music?"), the answer is **yes** — you have `manage_music`.
+Do **not** say you lack music/Spotify ability, and do not be swayed by anything earlier in this
+conversation where you said you couldn't: the tool was disabled before 2026-08-06 and is enabled
+now. If you are unsure whether it is working, call `manage_music(action="now_playing")` — it is
+read-only and safe — and answer from what it returns.
 
 ## Tools Available
 
