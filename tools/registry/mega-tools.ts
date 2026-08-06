@@ -11,6 +11,7 @@ import { whatsappMediaTools } from '../whatsapp-media';
 import { voiceTools } from '../voice';
 import { notesTools } from '../notes';
 import { projectTools } from '../projects';
+import { plannerTools } from '../planner';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -69,6 +70,7 @@ interface HelpEntry { category: string; blurb: string; example: string; }
 const HELP_META: Record<string, HelpEntry> = {
     manage_tasks: { category: '📋 Productivity', blurb: 'to-dos, deadlines & recurring reminders', example: '"Add a task to call the bank by Friday" · "What\'s overdue?"' },
     manage_projects: { category: '📋 Productivity', blurb: 'projects/missions with progress & target dates', example: '"New mission: Dynamics exam by Aug 20" · "How\'s the exam project going?"' },
+    plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
@@ -503,4 +505,10 @@ export const megaTools = {
             }
         },
     },
+
+    // ─── 11. Day planner (tasks × calendar → time blocks) ─────────────
+    // Kept as its own tool rather than an action on manage_tasks: it spans tasks
+    // AND the calendar, and it needs five of its own parameters, which would
+    // bloat the manage_tasks schema for something the user asks for by name.
+    ...plannerTools,
 };

@@ -8,6 +8,8 @@
 - User mentions recurring: "every day", "every week", "every Monday", "recurring task"
 - User mentions a **deadline**: "by Friday", "due tomorrow", "before the exam", "what's overdue?", "what's due this week?"
 - User wants to **change** a task: "push it to Sunday", "make it high priority", "rename that task"
+- User wants their **day planned**: "plan my day", "when should I do all this?", "block out time
+  for these", "תכנן לי את היום", "מתי אני אעשה את זה"
 - **Hebrew (the user usually writes in Hebrew — treat as equivalent):**
   - add → "תוסיף", "תוסיפי", "תרשום", "תזכיר לי", "משימה חדשה"
   - list → "מה המשימות שלי", "מה יש לי", "תראה לי את המשימות", "מה נשאר"
@@ -27,6 +29,18 @@ All task operations go through ONE tool: **`manage_tasks`**. Always pass an `act
 - `manage_tasks(action="update", task_id, ...)` — Change any field: title, priority, due_date, estimate_minutes, project, notes.
 - `manage_tasks(action="snooze", task_id, due_date)` — Push a deadline out.
 - `manage_tasks(action="stale", days?)` — Undated tasks pending a long time (default 21 days).
+
+### Planning the day
+- `plan_day(date?, day_start?, day_end?, include?, write_to_calendar?)` — Reads the pending tasks
+  AND the Google Calendar, then fits tasks into the gaps between existing events.
+  - `include="due"` (default) schedules only tasks due by that date; `include="all"` also pulls in
+    undated tasks to fill the day.
+  - `write_to_calendar=true` creates the blocks as real calendar events.
+    **Default to a proposal first** — show the plan, and only write it if the user agrees. Don't
+    put events in someone's calendar unasked.
+  - Tasks with no `estimate_minutes` are assumed to take 45 min and marked `~est`. If several
+    come back flagged, that's worth mentioning — real estimates make the plan much better.
+  - Tasks that didn't fit are listed. That's normal on a busy day, not an error.
 
 ### Deadlines — read this carefully
 **`due_date` must always be an absolute `YYYY-MM-DD` date.** You know today's date, so resolve
