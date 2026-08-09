@@ -106,6 +106,19 @@ export const config = {
         openclawBin: (process.env.OPENCLAW_BIN || '/opt/homebrew/bin/openclaw').trim(),
     },
 
+    // Guest user (the second person Astra talks to, via a separate OpenClaw agent
+    // bound to her number — see docs/GUEST-AGENT.md). She reaches an isolated tool
+    // surface (registry/guest-tools.ts) and her proactive messages go here.
+    guest: {
+        // Her WhatsApp number, E.164. Empty ⇒ her scheduler jobs are skipped entirely.
+        whatsappTarget: (process.env.GUEST_WHATSAPP_TARGET || '').trim(),
+        // 18:00 nudge fires only when at least this many kcal are still unused.
+        eveningNudgeThreshold: parseInt(process.env.GUEST_NUDGE_THRESHOLD_KCAL || '700', 10),
+        // Her messages are hers: the owner's Shabbat quiet window does not apply to
+        // her jobs by default. Set false to make her jobs respect it too.
+        bypassShabbat: (process.env.GUEST_BYPASS_SHABBAT || 'true').toLowerCase() !== 'false',
+    },
+
     // Telegram (LEGACY channel → now the out-of-band ALERT carrier). Kept for easy
     // revert; used by the scheduler watchdog to warn when WhatsApp is down.
     // Token also lives in ~/.openclaw/openclaw.json.
