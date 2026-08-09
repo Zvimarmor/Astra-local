@@ -235,11 +235,18 @@ db.exec(`
     //   briefing so deadlines lead the day. Self-silences when nothing is due.
     // stale_task_nudge: Sunday 19:00 — start of the Israeli work week, and a
     //   sane moment to prune. Also self-silences.
+    // guest_nutrition_checkin: 18:00 daily — silent unless she still has a large
+    //   unused calorie allowance (threshold in config.guest.eveningNudgeThreshold).
+    // guest_nutrition_report: 21:00 daily — her Hebrew end-of-day summary. Both
+    //   deliver to the GUEST number, not the owner's (see GUEST_JOBS in the
+    //   scheduler), and are skipped entirely when GUEST_WHATSAPP_TARGET is unset.
     const extras: [string, number, number, string][] = [
         ['weekly_recap', 20, 30, '6'],
         ['monthly_finance_review', 21, 0, 'daily'],
         ['deadline_watch', 7, 30, 'daily'],
         ['stale_task_nudge', 19, 0, '0'],
+        ['guest_nutrition_checkin', 18, 0, 'daily'],
+        ['guest_nutrition_report', 21, 0, 'daily'],
     ];
     const tx = db.transaction(() => {
         for (const [job, h, m, days] of extras) ensure.run(job, h, m, days, job);

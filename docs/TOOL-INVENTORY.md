@@ -6,6 +6,21 @@ server (`tools/list`), and `~/.openclaw/openclaw.json`. Every list below is what
 
 **Tools reaching the model: 11 OpenClaw built-ins + 10 Astra MCP tools (53 action slots).**
 
+> **⚠️ This inventory covers the OWNER agent (`main`) only.** Since 2026-08-09 there is a second
+> agent, `gf`, bound to one WhatsApp number, whose entire tool surface is a single tool
+> (`track_nutrition`) served by a *separate* MCP server. Nothing in this document applies to it —
+> see **[GUEST-AGENT.md](GUEST-AGENT.md)**. Before removing or renaming anything in
+> `tools/registry/index.ts`, read §4 of that doc: the owner tools are loaded through a
+> profile-branched `require()`, and turning it back into a static `import` silently collapses the
+> guest isolation.
+
+Changed 2026-08-09:
+- A **guest agent** (`gf`) was added with its own workspace, session store, skill and MCP server
+  (`astra-guest-tools`, same build + `ASTRA_PROFILE=guest`). Two new deterministic scheduler jobs
+  (`guest_nutrition_checkin` 18:00, `guest_nutrition_report` 21:00) deliver to *her* number, never
+  the owner's. Full design in [GUEST-AGENT.md](GUEST-AGENT.md).
+- `manage_calendar` gained a `delete` action (3 actions).
+
 Changed 2026-08-06 → 07:
 - `manage_music` **re-enabled** (§2) — spotifyd was never uninstalled, only stopped.
 - `web_search` moved **DuckDuckGo → local SearXNG** (§7) — DDG now IP-blocks this host.

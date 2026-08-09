@@ -51,6 +51,17 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
 
+### Two tool profiles — the guest agent
+
+`ASTRA_PROFILE` selects which surface `tools/mcp-server.ts` serves: unset/`owner` → the full
+mega-tool set + `tools/private/*`; `guest` → **only** `tools/registry/guest-tools.ts`
+(`track_nutrition`). OpenClaw registers both as separate MCP servers off the same build and routes
+one WhatsApp number to an isolated agent `gf`. **`tools/registry/index.ts` must keep loading
+`mega-tools` via a branched `require()`, never a top-level `import`** — a static import would
+execute storage/tasks/calendar (and `run_claude_code`) inside the guest process. Same rule for
+`guest-tools.ts`: it must not import any owner module. Full design + verification commands in
+`docs/GUEST-AGENT.md`.
+
 ### State & config
 
 - **All persistent state is local SQLite** at `data/memory.db` via `tools/storage.ts` (tables: `messages`, `tasks`, `recurring_tasks`, `habits`, `expenses`, `income`, `budgets`, `pending_facts`, `whatsapp_media`). No Google Sheets. The DB module opens the connection and creates tables on import.

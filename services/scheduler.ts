@@ -42,9 +42,28 @@ const { getCalendarClient } = require(path.join(DIST, 'google-auth.js'));
 const { checkWhatsAppHealth } = require(path.join(DIST, 'channel-health.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendOutOfBandAlert } = require(path.join(DIST, 'alert.js'));
+// Guest (non-owner) nutrition tracking — its own store, its own delivery target.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const nutritionStore = require(path.join(DIST, 'nutrition-store.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { GUEST_USER } = require(path.join(DIST, 'nutrition.js'));
 
 const TZ: string = config.timezone;
 const WA_TARGET: string = config.whatsapp.ownerTarget;
+const GUEST_TARGET: string = config.guest.whatsappTarget;
+
+/**
+ * Jobs whose message belongs to the GUEST, not the owner.
+ *
+ * Two things follow from being on this list, and both matter:
+ *  1. delivery goes to config.guest.whatsappTarget — never to the owner. There
+ *     is no out-of-band fallback: her data must not land in the owner's alert
+ *     email or Telegram just because a WhatsApp send failed.
+ *  2. the Shabbat quiet window is the OWNER's preference, so by default it does
+ *     not gate her messages (config.guest.bypassShabbat). Night quiet still
+ *     applies to everyone — nobody wants a 03:00 calorie report.
+ */
+const GUEST_JOBS = new Set(['guest_nutrition_report', 'guest_nutrition_checkin']);
 const TICK_MS = Math.max(15, config.scheduler.tickSeconds) * 1000;
 
 // ─── Time helpers (everything in the configured timezone) ─────────────
@@ -121,6 +140,21 @@ async function notifyOwner(subject: string, text: string): Promise<{ via: string
     const res = await sendOutOfBandAlert(subject, text);
     const carriers = [res.telegram ? 'telegram' : null, res.email ? 'email' : null].filter(Boolean).join('+');
     return { via: carriers || 'none', delivered: res.delivered };
+}
+
+/**
+ * Send to the guest. Deliberately NOT notifyOwner: no Telegram/email fallback,
+ * because those carriers are the owner's and her calorie report must never be
+ * re-routed to him. A failed send is logged and recorded, nothing more.
+ */
+async function notifyGuest(job: string, text: string): Promise<{ via: string; delivered: boolean }> {
+    if (!GUEST_TARGET) {
+        console.warn(`[Scheduler] ${job}: GUEST_WHATSAPP_TARGET not set — skipping.`);
+        return { via: 'none', delivered: false };
+    }
+    const ok = await sendWhatsAppText(text, GUEST_TARGET);
+    if (!ok) console.error(`[Scheduler] ${job}: WhatsApp send to guest failed.`);
+    return { via: ok ? 'whatsapp(guest)' : 'none', delivered: ok };
 }
 
 // ─── Analytical jobs are now FULLY deterministic (2026-07-06) ─────────
@@ -444,6 +478,21 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             }
             return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
         }
+        // ─── Guest nutrition (delivered to the guest, see GUEST_JOBS) ────
+        // Both builders read SQLite and format Hebrew directly — no LLM, so the
+        // report cannot hallucinate a number she did not log, and it still goes
+        // out when the Gemini free-tier quota is exhausted.
+        case 'guest_nutrition_report': {
+            const msg = nutritionStore.buildDailyReportHe(GUEST_USER, n.dateStr);
+            // null ⇒ she has not onboarded yet; stay silent rather than nag.
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
+        case 'guest_nutrition_checkin': {
+            // Self-silencing: returns null unless she still has a large unused
+            // allowance at 18:00 (config.guest.eveningNudgeThreshold).
+            const msg = nutritionStore.buildEveningNudgeHe(GUEST_USER, config.guest.eveningNudgeThreshold);
+            return { status: msg ? 'sent' : 'skipped_empty', message: msg };
+        }
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
         case 'monthly_finance_review': {
@@ -613,8 +662,12 @@ async function tick(): Promise<void> {
             //  - recurring_gen: runs (mutates DB) but stays silent.
             //  - music_alarm: ALWAYS fires + notifies, even at night/Shabbat (user policy).
             //  - everything else: skipped during quiet.
+            //  - guest_*: night quiet applies, but Shabbat quiet is the OWNER's
+            //    preference and does not gate her messages (config.guest.bypassShabbat).
             const quiet = inQuietHours(n);
-            const bypassesQuiet = s.job === 'recurring_gen' || s.job === 'music_alarm';
+            const isGuestJob = GUEST_JOBS.has(s.job);
+            const bypassesQuiet = s.job === 'recurring_gen' || s.job === 'music_alarm'
+                || (isGuestJob && quiet.reason === 'shabbat' && config.guest.bypassShabbat);
             if (quiet.quiet && !bypassesQuiet) {
                 storage.updateScheduleRun(s.id, n.dateStr, 'skipped_quiet', quiet.reason);
                 console.log(`[Scheduler] ${s.job}: skipped (quiet: ${quiet.reason})`);
@@ -628,7 +681,9 @@ async function tick(): Promise<void> {
                 // recurring_gen is the only job that suppresses its notification during quiet.
                 const suppressNotify = quiet.quiet && s.job === 'recurring_gen';
                 if (message && !suppressNotify) {
-                    const result = await notifyOwner(`Astra: ${s.job}`, message);
+                    const result = isGuestJob
+                        ? await notifyGuest(s.job, message)
+                        : await notifyOwner(`Astra: ${s.job}`, message);
                     finalStatus = result.delivered ? 'sent' : 'error';
                     via = result.via;
                 } else if (message && suppressNotify) {
