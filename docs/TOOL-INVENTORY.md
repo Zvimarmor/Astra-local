@@ -48,7 +48,7 @@ Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 do
 |---|---|---|
 | `manage_tasks` | `add`, `list`, `complete`, `delete`, `update`, `snooze`, `stale`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts` |
 | `manage_finances` | `add_expense`, `expense_summary`, `add_income`, `financial_overview`, `set_budget`, `list_budgets`, `budget_alerts` | `expenses.ts`, `budget.ts` |
-| `manage_calendar` | `list`, `add` | `calendar.ts` (Google, service account) |
+| `manage_calendar` | `list`, `add`, `delete` | `calendar.ts` (Google, service account) |
 | `manage_habits` | `track`, `log`, `list` | `habits.ts` |
 | `manage_memory` | `propose`, `approve`, `decline` | `memory.ts` (approval-gated) |
 | `manage_notes` | `add`, `find`, `list`, `link`, `delete` | `notes.ts` (Obsidian vault) |

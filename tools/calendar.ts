@@ -90,5 +90,66 @@ export const calendarTools = {
                 return { status: "error", error: err.message };
             }
         }
+    },
+
+    delete_calendar_event: {
+        name: "delete_calendar_event",
+        description:
+            "Delete an event from the user's Google Calendar. Accepts either a Google event id " +
+            "(as returned by list_calendar_events) or part of the event title. A title that matches " +
+            "more than one upcoming event deletes nothing and returns the candidates to choose from.",
+        parameters: {
+            type: "object",
+            properties: {
+                eventId: { type: "string", description: "Google event id, or part of the event title" }
+            },
+            required: ["eventId"]
+        },
+        execute: async (args: any) => {
+            if (typeof args.eventId !== 'string' || args.eventId.trim() === '') {
+                return { status: "error", error: "eventId must be a non-empty string (event id or part of the title)." };
+            }
+            const needle = args.eventId.trim();
+
+            try {
+                const calendar = getCalendarClient();
+
+                // Resolve the reference to exactly one upcoming event before deleting.
+                // Deleting is irreversible, so an ambiguous title must never guess.
+                const res = await calendar.events.list({
+                    calendarId: config.calendarId,
+                    timeMin: new Date().toISOString(),
+                    timeZone: TIMEZONE,
+                    maxResults: 100,
+                    singleEvents: true,
+                    orderBy: 'startTime',
+                });
+                const upcoming = (res.data.items || []).map(compactEvent);
+
+                let target = upcoming.find(e => e.id === needle);
+                if (!target) {
+                    const lower = needle.toLowerCase();
+                    const matches = upcoming.filter(e => e.title.toLowerCase().includes(lower));
+                    if (matches.length === 0) {
+                        return { status: "error", error: `No upcoming event matching "${needle}".` };
+                    }
+                    if (matches.length > 1) {
+                        return {
+                            status: "ambiguous",
+                            message: `${matches.length} upcoming events match "${needle}" — ask which one, then pass its id.`,
+                            events: matches,
+                        };
+                    }
+                    target = matches[0];
+                }
+
+                await calendar.events.delete({ calendarId: config.calendarId, eventId: target.id! });
+                console.log(`[Calendar] Deleted event: "${target.title}" at ${target.start}`);
+                return { status: "success", message: `Deleted "${target.title}"`, event: target };
+            } catch (err: any) {
+                console.error(`[Calendar] Failed to delete event "${needle}":`, err.message);
+                return { status: "error", error: err.message };
+            }
+        }
     }
 };
