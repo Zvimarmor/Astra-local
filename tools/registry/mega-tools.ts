@@ -70,7 +70,7 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_tasks: { category: '📋 Productivity', blurb: 'to-dos, deadlines & recurring reminders', example: '"Add a task to call the bank by Friday" · "What\'s overdue?"' },
     manage_projects: { category: '📋 Productivity', blurb: 'projects/missions with progress & target dates', example: '"New mission: Dynamics exam by Aug 20" · "How\'s the exam project going?"' },
     plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
-    manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm"' },
+    manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm" · "Cancel the dentist"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
@@ -247,12 +247,15 @@ export const megaTools = {
     manage_calendar: {
         name: 'manage_calendar',
         description:
-            "Read or add Google Calendar events. Choose action: 'list' (optional max_results) " +
-            "or 'add' (needs summary, start, end in ISO format e.g. 2026-06-23T14:00:00; optional location, description).",
+            "Read, add or delete Google Calendar events. Choose action: 'list' (optional max_results), " +
+            "'add' (needs summary, start, end in ISO format e.g. 2026-06-23T14:00:00; optional location, description), " +
+            "or 'delete' (needs event_id — either the id from 'list' or part of the event title; " +
+            "if the title matches several events nothing is deleted and the candidates come back to choose from).",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['list', 'add'], description: 'List upcoming events or add a new one' },
+                action: { type: 'string', enum: ['list', 'add', 'delete'], description: 'List upcoming events, add a new one, or delete one' },
+                event_id: { type: 'string', description: 'Event id from list, or part of the event title (for delete)' },
                 max_results: { type: 'number', description: 'How many events to list (default 10)' },
                 summary: { type: 'string', description: 'Event title (for add)' },
                 location: { type: 'string', description: 'Location or meeting link (for add)' },
@@ -266,7 +269,8 @@ export const megaTools = {
             switch (a.action) {
                 case 'list': return call(calendarTools as DomainMap, 'list_calendar_events', { maxResults: a.max_results });
                 case 'add': return call(calendarTools as DomainMap, 'add_calendar_event', { summary: a.summary, location: a.location, description: a.description, startDateTime: a.start, endDateTime: a.end });
-                default: return badAction(a.action, ['list', 'add']);
+                case 'delete': return call(calendarTools as DomainMap, 'delete_calendar_event', { eventId: a.event_id });
+                default: return badAction(a.action, ['list', 'add', 'delete']);
             }
         },
     },

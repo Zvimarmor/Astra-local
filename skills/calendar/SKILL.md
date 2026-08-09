@@ -4,6 +4,7 @@
 - User mentions: "meeting", "appointment", "event", "schedule"
 - User asks: "what's on my calendar?", "what do I have today?", "upcoming events"
 - User says: "add event", "schedule a meeting", "block time"
+- User says: "cancel", "delete", "remove" about a meeting/appointment/event
 
 ## Tools Available
 
@@ -11,6 +12,7 @@ All calendar operations go through ONE tool: **`manage_calendar`**. Always pass 
 
 - `manage_calendar(action="list", max_results?)` — List upcoming events from Google Calendar (default 10).
 - `manage_calendar(action="add", summary, start, end, location?, description?)` — Add an event. `start`/`end` are ISO datetimes, e.g. `2026-06-23T15:00:00`.
+- `manage_calendar(action="delete", event_id)` — Delete an event. `event_id` is either the `id` from `action="list"` or part of the event title.
 
 ## Rules
 1. All times are in Israel timezone (Asia/Jerusalem).
@@ -20,6 +22,9 @@ All calendar operations go through ONE tool: **`manage_calendar`**. Always pass 
 3. If no end time is specified, default to 1 hour after start.
 4. Use `assistant_utils(action="current_time")` if you need today's date for time calculations.
 5. When listing events, format with time and title clearly.
+6. Deleting is irreversible: say which event you are about to delete and get a "yes" before calling `action="delete"`.
+   If the tool returns `status="ambiguous"`, do NOT retry blindly — show the returned events and ask which one, then
+   call again with that event's `id`.
 
 ## Examples
 - "What's on my calendar?" → `manage_calendar(action="list", max_results=10)`
