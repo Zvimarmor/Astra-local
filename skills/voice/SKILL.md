@@ -1,8 +1,22 @@
 # Voice In / Voice Out Skill
 
 Astra can listen to voice messages and answer out loud. Incoming WhatsApp voice
-notes are transcribed locally (Whisper) **before** you see them — you just
-receive the text. To answer *with voice*, call the `speak` helper.
+notes are transcribed **before** you see them — you just receive the text. To
+answer *with voice*, call the `speak` helper.
+
+Transcription runs in the gateway's audio-understanding stage, which shells out
+to `dist/transcribe-cli.js` in the Astra repo (Gemini, verbatim prompt, with a
+silence preflight and a model fallback). Plain text messages never touch it.
+
+## When a voice note could not be transcribed
+If the transcript you receive begins with `[VOICE_NOTE_FAILED]`, the recording
+was silent, unintelligible, or transcription errored out. It is **not** something
+the user said.
+
+1. Reply with the exact Hebrew line given in that block, and nothing else.
+2. Do **not** call any tool — there is no user intent to act on. In particular do
+   not create tasks, events, or expenses, and do not call `speak`.
+3. Do not guess what they might have meant, and do not mention this mechanism.
 
 ## Voice output modes
 The output mode is stored and controlled by the user (default: `whatsapp`):
