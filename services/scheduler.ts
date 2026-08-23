@@ -21,6 +21,13 @@
  */
 
 import path from 'path';
+import {
+    b, NIS, signedNIS,
+    daysBetween, hebrewDays, hebrewMonth, hebrewDate,
+    taskLine, tasksByPriority, agendaBlock, budgetAlertLines, compose,
+    splitQueue, rollingBlock, missedDeadlineBlock, CHRONIC_ROLLOVER_THRESHOLD,
+    type EventLike, type TaskLike,
+} from './report-format';
 
 // ─── Reuse compiled tool logic from ../dist (runtime require, not a TS import,
 //     so it sidesteps the services rootDir boundary). config.js loads .env. ───
@@ -49,6 +56,8 @@ const nutritionStore = require(path.join(DIST, 'nutrition-store.js'));
 const { GUEST_USER } = require(path.join(DIST, 'nutrition.js'));
 
 const TZ: string = config.timezone;
+// Display name used in the Hebrew greeting ("בוקר טוב צבי!").
+const OWNER_NAME: string = (process.env.OWNER_NAME || 'צבי').trim();
 const WA_TARGET: string = config.whatsapp.ownerTarget;
 const GUEST_TARGET: string = config.guest.whatsappTarget;
 
@@ -169,11 +178,20 @@ async function notifyGuest(job: string, text: string): Promise<{ via: string; de
 // (OLLAMA_NUM_PARALLEL≥2) and restore phraseWithLLM from git history.
 
 // ─── Deterministic message builders (reuse storage content fns) ───────
+//
+// LANGUAGE POLICY (2026-08-18): every proactive message is 100% Hebrew.
+// Headers, statuses and priorities used to be English while the task titles
+// themselves were Hebrew, which made every report read as half-translated.
+// All wording/emoji/layout now lives in ./report-format so the morning
+// briefing, evening review and weekly recap cannot drift apart again.
+//
+// NO TRUNCATION: reports never print "…ועוד 4". A summary that hides rows is
+// a summary you have to double-check, which defeats the point. Long lists are
+// kept readable by grouping (priority headers), not by dropping data.
 
-const NIS = (n: number) => `${Math.round(n)} NIS`;
 
 /** Fetch a compact list of the given day's Google Calendar events. Never throws — returns [] on any failure. */
-async function getDayEvents(dateStr: string): Promise<Array<{ title: string; start: string; all_day: boolean }>> {
+async function getDayEvents(dateStr: string): Promise<EventLike[]> {
     try {
         const calendar = getCalendarClient();
         const timeMin = new Date(`${dateStr}T00:00:00`).toISOString();
@@ -181,10 +199,10 @@ async function getDayEvents(dateStr: string): Promise<Array<{ title: string; sta
         const res = await calendar.events.list({
             calendarId: config.calendarId,
             timeMin, timeMax, timeZone: TZ,
-            maxResults: 20, singleEvents: true, orderBy: 'startTime',
+            maxResults: 50, singleEvents: true, orderBy: 'startTime',
         });
         return (res.data.items || []).map((e: any) => ({
-            title: e.summary || '(no title)',
+            title: e.summary || '(ללא כותרת)',
             start: e.start?.dateTime || e.start?.date || '',
             all_day: Boolean(e.start?.date && !e.start?.dateTime),
         }));
@@ -194,61 +212,100 @@ async function getDayEvents(dateStr: string): Promise<Array<{ title: string; sta
     }
 }
 
-function formatEventTime(iso: string, allDay: boolean): string {
-    if (allDay) return 'All day';
-    return new Date(iso).toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+/** Projects with a target date inside the horizon, as Hebrew lines. */
+function projectDeadlineLines(days: number = 7): string[] {
+    const projects = storage.getUpcomingProjectDeadlines(days);
+    if (!projects.length) return [];
+    const out = [`🎯 ${b('פרויקטים לקראת יעד:')}`];
+    for (const p of projects) {
+        const left = p.days_left === null ? ''
+            : p.days_left < 0 ? ` — באיחור של ${hebrewDays(Math.abs(p.days_left))}`
+            : p.days_left === 0 ? ' — היעד היום'
+            : ` — נותרו ${hebrewDays(p.days_left)}`;
+        out.push(`• ${p.name} (${p.done}/${p.total} הושלמו)${left}`);
+    }
+    return out;
 }
 
+/**
+ * THE unified morning briefing — the single source of truth for the day.
+ *
+ * It deliberately absorbs what the separate 07:30 `deadline_watch` ping used to
+ * say (overdue / due-today / project deadlines). Two notifications half an hour
+ * apart, each holding half the picture, is clutter; the 07:30 schedule row is
+ * disabled in SQLite as part of this change. buildDeadlineWatch() is still here
+ * for on-demand use, but nothing schedules it by default.
+ */
 async function buildMorningBriefing(dateStr: string): Promise<string> {
-    const status = { pending_tasks: storage.getPendingTasks(), uncompleted_habits: [] as any[] };
+    // Roll first, then read — otherwise the 08:00 briefing would describe
+    // yesterday's queue on any morning the 07:00 tick was missed.
+    storage.ensureDailyRollover();
+    const allPending: TaskLike[] = storage.getPendingTasks('active');
+    const { missed, dueToday, rolling, chronic, rest } = splitQueue(allPending, dateStr);
+
     const habits = storage.getHabits().filter((h: any) => h.last_logged_date !== dateStr);
     const fin = storage.getFinancialOverview('month');
     const alerts = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
-
-    const lines: string[] = [`☀️ Good morning! Daily Summary — ${dateStr}`, ''];
-
     const events = await getDayEvents(dateStr);
-    lines.push(`📅 Today's Agenda (${events.length}):`);
-    if (events.length === 0) lines.push('  Nothing on the calendar today.');
-    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
 
-    const tasks = status.pending_tasks;
-    lines.push(`✅ Pending Tasks (${tasks.length}):`);
-    if (tasks.length === 0) lines.push('  None — a clear slate! 🎉');
-    else {
-        tasks.slice(0, 5).forEach((t: any, i: number) => lines.push(`  ${i + 1}. ${t.title} (${t.priority})`));
-        if (tasks.length > 5) lines.push(`  …and ${tasks.length - 5} more`);
+    const L: string[] = [];
+    L.push(`☀️ ${b(`בוקר טוב ${OWNER_NAME}! סיכום יומי — ${dateStr}`)}`, `_${hebrewDate(dateStr, TZ)}_`, '');
+
+    // 📅 Agenda (all-day events get their own header — never "00:00 — …").
+    L.push(...agendaBlock(events, TZ, 'לו״ז להיום:', 'אין אירועים בלו״ז היום.'), '');
+
+    // ⏰ Deadlines — RED IS RARE NOW. Only a blown external deadline lands here;
+    // work the user simply hasn't reached yet gets the amber rolling block below.
+    // That separation is the point of the whole rolling-queue change: an alarm
+    // that fires every morning is not an alarm.
+    const projLines = projectDeadlineLines(7);
+    if (missed.length || dueToday.length || projLines.length) {
+        L.push(`⏰ ${b('דד-ליינים ומשימות קריטיות:')}`);
+        L.push(...missedDeadlineBlock(missed, dateStr));
+        if (dueToday.length) {
+            L.push(`📌 ${b('דד-ליין היום')} (${dueToday.length}):`);
+            for (const t of dueToday) L.push(taskLine(t));
+        }
+        if (projLines.length) L.push(...projLines);
+        L.push('');
     }
 
-    if (habits.length > 0) {
-        lines.push('', `🔁 Habits to do today (${habits.length}):`);
-        habits.slice(0, 6).forEach((h: any) => lines.push(`  • ${h.name}`));
+    // 🔁 Carried over from earlier days — active, not late.
+    if (rolling.length) L.push(...rollingBlock(rolling, chronic), '');
+
+    // ✅ Everything else still open — full list, grouped by priority.
+    L.push(`✅ ${b(`משימות פתוחות נוספות (${rest.length}):`)}`);
+    if (!rest.length) L.push(allPending.length ? '• אין נוספות מעבר למה שלמעלה. 👌' : '• אין משימות פתוחות — לוח נקי! 🎉');
+    else L.push(...tasksByPriority(rest));
+    L.push('');
+
+    if (habits.length) {
+        L.push(`🔁 ${b(`הרגלים להיום (${habits.length}):`)}`);
+        for (const h of habits) L.push(`• ${h.name}`);
+        L.push('');
     }
 
     if (fin.total_income > 0 || fin.total_expenses > 0) {
-        const sign = fin.net >= 0 ? '+' : '';
-        lines.push('', '💰 Financial Snapshot (this month):',
-            `  Income: ${NIS(fin.total_income)} | Expenses: ${NIS(fin.total_expenses)} | Net: ${sign}${NIS(fin.net)}`);
+        L.push(`💰 ${b('תמונת מצב כספית (החודש):')}`);
+        L.push(`• הכנסות: ${NIS(fin.total_income)} · הוצאות: ${NIS(fin.total_expenses)} · מאזן: ${signedNIS(fin.net)}`);
+        L.push('');
     }
 
-    if (alerts.length > 0) {
-        lines.push('', '⚠️ Budget Alerts:');
-        for (const a of alerts) {
-            const tag = a.alert === 'over' ? '🔴' : '🟡';
-            const note = a.alert === 'over' ? 'OVER' : `${a.percent}%`;
-            lines.push(`  ${tag} ${a.category}: ${NIS(a.spent)}/${NIS(a.limit)} — ${note}`);
-        }
+    if (alerts.length) {
+        L.push(`⚠️ ${b('התראות תקציב:')}`);
+        for (const line of budgetAlertLines(alerts)) L.push(line);
+        L.push('');
     }
 
-    lines.push('', 'Have a productive day! 💪');
-    return lines.join('\n');
+    L.push(`💪 ${b('שיהיה יום מוצלח ומלא עשייה!')}`);
+    return compose(L);
 }
 
+/** Evening review — same layout language as the morning briefing, looking forward to tomorrow. */
 async function buildEveningReview(dateStr: string): Promise<string> {
-    const today = storage.getExpenseSummary('week'); // weekly bucket; today's slice below
-    const week = today.total;
+    const week = storage.getExpenseSummary('week').total;
     const fin = storage.getFinancialOverview('month');
-    const tasks = storage.getPendingTasks();
+    const tasks: TaskLike[] = storage.getPendingTasks('active');
     const recurringCount = storage.getActiveRecurringTasks().length;
 
     const tomorrow = new Date(`${dateStr}T12:00:00`);
@@ -256,150 +313,171 @@ async function buildEveningReview(dateStr: string): Promise<string> {
     const tomorrowStr = tomorrow.toLocaleDateString('sv-SE', { timeZone: TZ });
     const events = await getDayEvents(tomorrowStr);
 
-    const lines: string[] = [`🌙 Good evening! Evening Summary — ${dateStr}`, ''];
-    lines.push(`📅 Tomorrow's Agenda (${events.length}):`);
-    if (events.length === 0) lines.push('  Nothing on the calendar yet.');
-    else events.forEach(e => lines.push(`  • ${formatEventTime(e.start, e.all_day)} — ${e.title}`));
+    const { missed, rolling, chronic } = splitQueue(tasks, dateStr);
+    const claimed = new Set([...missed, ...rolling].map(t => t.id));
+    const dueTomorrow = tasks.filter(t => !claimed.has(t.id) && t.deadline === tomorrowStr);
+    dueTomorrow.forEach(t => claimed.add(t.id));
+    const rest = tasks.filter(t => !claimed.has(t.id) && t.state !== 'waiting');
 
-    lines.push('', `📊 This week's expenses: ${NIS(week)}`);
-    if (fin.total_income > 0 || fin.total_expenses > 0) {
-        const sign = fin.net >= 0 ? '+' : '';
-        lines.push(`💰 Month net so far: ${sign}${NIS(fin.net)}`);
-    }
-    if (tasks.length > 0) {
-        const top = [...tasks].sort((a: any, b: any) => rank(a.priority) - rank(b.priority))[0];
-        lines.push('', `✅ Top priority for tomorrow: ${top.title} (${top.priority})`);
-        lines.push(`   (${tasks.length} task${tasks.length === 1 ? '' : 's'} still pending)`);
-    } else {
-        lines.push('', '✅ No pending tasks — all clear!');
-    }
-    if (recurringCount > 0) lines.push('', `🔄 Recurring templates active: ${recurringCount}`);
+    const L: string[] = [];
+    L.push(`🌙 ${b(`סיכום ערב — ${dateStr}`)}`, `_${hebrewDate(dateStr, TZ)}_`, '');
 
-    // Habit streaks. Only shown when there are habits at all, so this stays silent
-    // rather than printing an empty section for users who don't track any.
+    L.push(...agendaBlock(events, TZ, 'לו״ז למחר:', 'אין עדיין אירועים בלו״ז למחר.'), '');
+
+    if (missed.length || dueTomorrow.length) {
+        L.push(`⏰ ${b('דד-ליינים:')}`);
+        L.push(...missedDeadlineBlock(missed, dateStr));
+        if (dueTomorrow.length) {
+            L.push(`📌 ${b('דד-ליין מחר')} (${dueTomorrow.length}):`);
+            for (const t of dueTomorrow) L.push(taskLine(t));
+        }
+        L.push('');
+    }
+
+    // Anything unfinished tonight rolls into tomorrow by itself — say so, so the
+    // evening report reads as a handover rather than a list of today's failures.
+    if (rolling.length) L.push(...rollingBlock(rolling, chronic), '');
+
+    L.push(`✅ ${b(`משימות פתוחות נוספות (${rest.length}):`)}`);
+    if (!rest.length) L.push(tasks.length ? '• אין נוספות מעבר למה שלמעלה. 👌' : '• אין משימות פתוחות — הכול סגור! 🎉');
+    else L.push(...tasksByPriority(rest));
+    L.push('');
+
+    // Habit streaks. Silent when no habits are tracked at all.
     const habitsWithStreaks = storage.getHabitsWithStreaks();
-    if (habitsWithStreaks.length > 0) {
-        lines.push('', '🔥 Habits:');
+    if (habitsWithStreaks.length) {
+        const done = habitsWithStreaks.filter((h: any) => h.done_today).length;
+        L.push(`🔁 ${b(`הרגלים יומיים (${done}/${habitsWithStreaks.length} הושלמו):`)}`);
         for (const h of habitsWithStreaks) {
             const mark = h.done_today ? '✅' : '⬜';
-            const streak = h.streak > 1 ? ` — ${h.streak}-day streak` : (h.streak === 1 ? ' — day 1' : '');
-            lines.push(`  ${mark} ${h.name}${streak}`);
+            const streak = h.streak > 1 ? ` — רצף של ${hebrewDays(h.streak)}` : (h.streak === 1 ? ' — יום ראשון ברצף' : '');
+            L.push(`${mark} ${h.name}${streak}`);
         }
+        L.push('');
     }
 
-    lines.push('', 'Good night! 😴');
-    return lines.join('\n');
-}
+    L.push(`💰 ${b('כספים:')}`);
+    L.push(`• הוצאות השבוע: ${NIS(week)}`);
+    if (fin.total_income > 0 || fin.total_expenses > 0) L.push(`• מאזן החודש עד כה: ${signedNIS(fin.net)}`);
+    if (recurringCount > 0) L.push('', `🔄 ${b('תבניות משימות מחזוריות פעילות:')} ${recurringCount}`);
 
-function rank(priority: string): number {
-    return ({ high: 0, medium: 1, low: 2 } as Record<string, number>)[priority] ?? 1;
+    L.push('', `😴 ${b('לילה טוב ומנוחה נעימה!')}`);
+    return compose(L);
 }
 
 /**
- * Deadline watch — what's overdue or due today/soon.
- *
- * Silent when there is nothing to report (returns null), so it only ever
- * interrupts when a deadline actually needs attention. Fully deterministic:
- * built straight from SQLite with no model in the path, which also means it
- * costs no Gemini quota and can't be rate-limited.
+ * Deadline watch — kept for on-demand/manual use only.
+ * Its content is now part of the 08:00 briefing (see buildMorningBriefing), and
+ * the 07:30 schedule row was disabled so the two don't ping back to back.
+ * Silent (null) when there is nothing to report.
  */
 function buildDeadlineWatch(dateStr: string): string | null {
-    const overdue = storage.getPendingTasks('overdue');
-    const dueToday = storage.getPendingTasks('today').filter((t: any) => t.due_date === dateStr);
-    const projects = storage.getUpcomingProjectDeadlines(7);
+    // Deadlines only — a rolled-over plan is deliberately NOT reported here.
+    const missed: TaskLike[] = storage.getPendingTasks('overdue');
+    const dueToday: TaskLike[] = storage.getPendingTasks('active').filter((t: any) => t.deadline === dateStr);
+    const projLines = projectDeadlineLines(7);
 
-    if (!overdue.length && !dueToday.length && !projects.length) return null;
+    if (!missed.length && !dueToday.length && !projLines.length) return null;
 
-    const lines: string[] = [`⏰ Deadlines — ${dateStr}`, ''];
-
-    if (overdue.length) {
-        lines.push(`🔴 Overdue (${overdue.length}):`);
-        for (const t of overdue.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (was due ${t.due_date})`);
-        if (overdue.length > 10) lines.push(`  …and ${overdue.length - 10} more`);
-        lines.push('');
-    }
+    const L: string[] = [`⏰ ${b(`דד-ליינים — ${dateStr}`)}`, ''];
+    if (missed.length) L.push(...missedDeadlineBlock(missed, dateStr), '');
     if (dueToday.length) {
-        lines.push(`📌 Due today (${dueToday.length}):`);
-        for (const t of dueToday) {
-            const est = t.estimate_minutes ? ` ~${t.estimate_minutes}m` : '';
-            lines.push(`  • ${t.id} ${t.title}${est}`);
-        }
-        lines.push('');
+        L.push(`📌 ${b('דד-ליין היום')} (${dueToday.length}):`);
+        for (const t of dueToday) L.push(taskLine(t));
+        L.push('');
     }
-    if (projects.length) {
-        lines.push('🎯 Projects closing in:');
-        for (const p of projects) {
-            const left = p.days_left === null ? '' :
-                p.days_left < 0 ? ` — ${Math.abs(p.days_left)}d overdue` :
-                p.days_left === 0 ? ' — due today' : ` — ${p.days_left}d left`;
-            lines.push(`  • ${p.name} (${p.done}/${p.total} done)${left}`);
-        }
-    }
-    return lines.join('\n').trim();
+    if (projLines.length) L.push(...projLines);
+    return compose(L);
 }
 
 /**
- * Stale-task nudge — undated tasks that have been pending a long time.
- * Weekly, and silent when there's nothing stale. The point is to force a
- * decision (schedule it or drop it) rather than let the list rot.
+ * Stale-task nudge — undated tasks pending for 3+ weeks. Weekly, silent when
+ * nothing is stale. The point is to force a decision (date it or drop it).
  */
 function buildStaleTaskNudge(): string | null {
-    const stale = storage.getStaleTasks(21);
+    const stale: TaskLike[] = storage.getStaleTasks(21);
     if (!stale.length) return null;
 
-    const lines: string[] = [`🧹 ${stale.length} task${stale.length === 1 ? '' : 's'} sitting with no deadline for 3+ weeks:`, ''];
-    for (const t of stale.slice(0, 10)) lines.push(`  • ${t.id} ${t.title} (added ${t.date})`);
-    if (stale.length > 10) lines.push(`  …and ${stale.length - 10} more`);
-    lines.push('', 'Worth giving these a date or dropping them?');
-    return lines.join('\n');
+    const L: string[] = [
+        `🧹 ${b(`${stale.length} משימות ללא תאריך יעד כבר 3 שבועות ומעלה:`)}`, '',
+    ];
+    for (const t of stale) L.push(taskLine(t, t.date ? ` (נוספה ב-${t.date})` : ''));
+    L.push('', 'שווה לקבוע להן תאריך יעד או פשוט למחוק אותן. 🤔');
+    return compose(L);
 }
 
 function buildBudgetAlert(): string | null {
     const flagged = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
-    if (flagged.length === 0) return null; // silent when all clear
-    const lines = ['⚠️ Budget check:'];
-    for (const a of flagged) {
-        const tag = a.alert === 'over' ? '🔴' : '🟡';
-        const note = a.alert === 'over' ? `OVER by ${NIS(a.spent - a.limit)}` : `${a.percent}% used (${NIS(a.limit - a.spent)} left)`;
-        lines.push(`  ${tag} ${a.category}: ${NIS(a.spent)}/${NIS(a.limit)} — ${note}`);
-    }
-    return lines.join('\n');
+    if (!flagged.length) return null; // silent when all clear
+    return compose([`⚠️ ${b('בדיקת תקציב:')}`, '', ...budgetAlertLines(flagged)]);
 }
 
 async function buildEmailDigest(): Promise<string | null> {
     const res = await emailDigestTools.get_email_digest.execute({});
     if (!res || res.status === 'error' || res.status === 'not_configured') return null;
     const total = res.total_unseen ?? 0;
-    if (!total) return null; // silent when inbox is quiet
-    const lines = [`📧 Email digest — ${total} unread`];
+    if (!total) return null; // silent when the inbox is quiet
+    const L = [`📧 ${b(`תקציר מיילים — ${total} לא נקראו`)}`];
     for (const d of (res.digests || [])) {
         if (!d || d.status !== 'ok' || !d.unseen) continue;
-        lines.push('', `${d.account || 'inbox'} (${d.unseen} unread):`);
-        for (const e of (d.top_emails || []).slice(0, 5)) lines.push(`  • ${e.subject}`);
+        L.push('', `${b(d.account || 'תיבה')} (${d.unseen} לא נקראו):`);
+        for (const e of (d.top_emails || [])) L.push(`• ${e.subject}`);
     }
-    return lines.length > 1 ? lines.join('\n') : null;
+    return L.length > 1 ? compose(L) : null;
 }
 
-// ─── Analytical builders (deterministic facts + LLM phrasing) ─────────
+// ─── Analytical builders (fully deterministic — see note above) ───────
 
 async function buildWeeklyRecap(dateStr: string): Promise<string> {
     const exp = storage.getExpenseSummary('week');
     const fin = storage.getFinancialOverview('week');
-    const tasks = storage.getPendingTasks();
+    const tasks: TaskLike[] = storage.getPendingTasks('active');
     const recurringCount = storage.getActiveRecurringTasks().length;
-    const topCats = exp.categories.slice(0, 3).map((c: any) => `${c.category} ${NIS(c.total)}`).join(', ');
+    const { missed, chronic } = splitQueue(tasks, dateStr);
 
-    const lines: string[] = [`📈 Weekly Recap — week ending ${dateStr}`, ''];
-    lines.push(`💸 Spent this week: ${NIS(exp.total)}` + (topCats ? ` (top: ${topCats})` : ''));
-    if (fin.total_income > 0 || fin.total_expenses > 0) {
-        const sign = fin.net >= 0 ? '+' : '';
-        lines.push(`💰 Net this week: ${sign}${NIS(fin.net)} (in ${NIS(fin.total_income)}, out ${NIS(fin.total_expenses)})`);
+    const L: string[] = [`📈 ${b(`סיכום שבועי — לשבוע שהסתיים ב-${dateStr}`)}`, ''];
+
+    L.push(`💸 ${b('כספים השבוע:')}`);
+    L.push(`• סך ההוצאות: ${NIS(exp.total)}`);
+    if (exp.categories.length) {
+        for (const c of exp.categories.slice(0, 5)) L.push(`  ◦ ${c.category}: ${NIS(c.total)} (${c.count} פעמים)`);
     }
-    lines.push(`✅ Open tasks: ${tasks.length}`);
-    if (recurringCount > 0) lines.push(`🔄 Active recurring templates: ${recurringCount}`);
-    lines.push('', "Here's to a strong week ahead! 💪");
+    if (fin.total_income > 0 || fin.total_expenses > 0) {
+        L.push(`• מאזן: ${signedNIS(fin.net)} (נכנס ${NIS(fin.total_income)}, יצא ${NIS(fin.total_expenses)})`);
+    }
+    L.push('');
 
-    return lines.join('\n'); // deterministic: the SQLite-built draft IS the message
+    // Habits — a week is the right window to see whether streaks actually held.
+    const habits = storage.getHabitsWithStreaks();
+    if (habits.length) {
+        L.push(`🔁 ${b('הרגלים:')}`);
+        for (const h of habits) {
+            const streak = h.streak > 0 ? `רצף של ${hebrewDays(h.streak)}` : 'הרצף נקטע';
+            L.push(`• ${h.name} — ${streak}`);
+        }
+        L.push('');
+    }
+
+    // Overdue first as its own block, then everything else by priority — the
+    // same shape as the daily reports, so the three read as one family.
+    // A week is the right window for the chronic-rollover signal: one slipped day
+    // is noise, four in a row is the queue telling you the task is wrong.
+    const claimedWeekly = new Set([...missed, ...chronic].map(t => t.id));
+    const restWeekly = tasks.filter(t => !claimedWeekly.has(t.id));
+    L.push(`✅ ${b(`משימות פתוחות (${tasks.length}):`)}`);
+    if (!tasks.length) L.push('• אין משימות פתוחות — סיימת את השבוע נקי! 🎉');
+    if (missed.length) {
+        L.push(...missedDeadlineBlock(missed, dateStr));
+    }
+    if (chronic.length) {
+        L.push(`🔁 ${b(`נדחות שוב ושוב (${chronic.length})`)} — ${CHRONIC_ROLLOVER_THRESHOLD}+ דחיות. לפצל, להקטין או לוותר:`);
+        for (const t of chronic) L.push(taskLine(t));
+    }
+    if (restWeekly.length) L.push(...tasksByPriority(restWeekly));
+    if (recurringCount > 0) L.push('', `🔄 ${b('תבניות משימות מחזוריות פעילות:')} ${recurringCount}`);
+
+    L.push('', `💪 ${b('שבוע חדש, בוא נעשה אותו חזק!')}`);
+    return compose(L); // deterministic: the SQLite-built draft IS the message
 }
 
 async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null> {
@@ -413,26 +491,20 @@ async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null
     const fin = storage.getFinancialOverview('month');
     const exp = storage.getExpenseSummary('month');
     const alerts = storage.checkBudgetAlerts().filter((a: any) => a.alert !== 'ok');
-    const monthName = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: TZ });
-    const sign = fin.net >= 0 ? '+' : '';
 
-    const lines: string[] = [`🗓️ Monthly Finance Review — ${monthName}`, ''];
-    lines.push(`💰 Income: ${NIS(fin.total_income)} | Expenses: ${NIS(fin.total_expenses)} | Net: ${sign}${NIS(fin.net)}`);
-    if (exp.categories.length > 0) {
-        lines.push('', '📊 Top spending categories:');
-        exp.categories.slice(0, 5).forEach((c: any) => lines.push(`  • ${c.category}: ${NIS(c.total)} (${c.count}x)`));
+    const L: string[] = [`🗓️ ${b(`סיכום כספי חודשי — ${hebrewMonth(dateStr, TZ)}`)}`, ''];
+    L.push(`💰 ${b('שורה תחתונה:')}`);
+    L.push(`• הכנסות: ${NIS(fin.total_income)} · הוצאות: ${NIS(fin.total_expenses)} · מאזן: ${signedNIS(fin.net)}`);
+    if (exp.categories.length) {
+        L.push('', `📊 ${b('הקטגוריות הגדולות:')}`);
+        for (const c of exp.categories.slice(0, 5)) L.push(`• ${c.category}: ${NIS(c.total)} (${c.count} פעמים)`);
     }
-    if (alerts.length > 0) {
-        lines.push('', '⚠️ Budgets over / at risk:');
-        for (const a of alerts) {
-            const tag = a.alert === 'over' ? '🔴' : '🟡';
-            const note = a.alert === 'over' ? 'OVER' : `${a.percent}%`;
-            lines.push(`  ${tag} ${a.category}: ${NIS(a.spent)}/${NIS(a.limit)} — ${note}`);
-        }
+    if (alerts.length) {
+        L.push('', `⚠️ ${b('תקציבים בחריגה או בסיכון:')}`);
+        for (const line of budgetAlertLines(alerts)) L.push(line);
     }
-    lines.push('', 'New month, fresh start. 🚀');
-
-    return lines.join('\n'); // deterministic: the SQLite-built draft IS the message
+    L.push('', `🚀 ${b('חודש חדש, התחלה נקייה.')}`);
+    return compose(L); // deterministic: the SQLite-built draft IS the message
 }
 
 // ─── Job dispatch. Returns { status, message } ────────────────────────
@@ -440,8 +512,15 @@ async function buildMonthlyFinanceReview(dateStr: string): Promise<string | null
 async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: string | null }> {
     switch (s.job) {
         case 'recurring_gen': {
+            // The 07:00 tick is also where the rolling queue is carried forward:
+            // it runs before the 08:00 briefing and bypasses quiet hours, so the
+            // day always starts with a current queue. It is idempotent, and the
+            // tool surface calls ensureDailyRollover() too, so a Mac that was
+            // asleep at 07:00 still gets a correct queue on the first question.
+            const rolled = storage.ensureDailyRollover().rolled;
             const count = storage.generateDueRecurringTasks();
-            return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 Generated ${count} recurring task${count === 1 ? '' : 's'} for today.` : null };
+            if (rolled > 0) console.log(`[Scheduler] Rolled ${rolled} unfinished task(s) into today.`);
+            return { status: count > 0 ? 'sent' : 'skipped_empty', message: count > 0 ? `🔄 ${b('משימות מחזוריות')} — נוצרו ${count} משימות להיום.` : null };
         }
         case 'morning_briefing':
             return { status: 'sent', message: await buildMorningBriefing(n.dateStr) };
@@ -471,12 +550,12 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             // payload carries {query,type}; play it via the compiled spotify tool.
             let p: any = {};
             try { p = JSON.parse(s.payload || '{}'); } catch { }
-            if (!p.query) return { status: 'error', message: '⚠️ Music alarm has no query.' };
+            if (!p.query) return { status: 'error', message: '⚠️ לשעון המעורר המוזיקלי לא הוגדר מה לנגן.' };
             const res = await spotifyTools.spotify_play.execute({ query: p.query, type: p.type || 'track' });
             if (res && res.status === 'success') {
-                return { status: 'sent', message: `⏰🎵 Alarm: ${res.message}` };
+                return { status: 'sent', message: `⏰🎵 ${b('שעון מעורר')} — ${res.message}` };
             }
-            return { status: 'error', message: `⚠️ Music alarm failed: ${(res && res.error) || 'unknown error'}` };
+            return { status: 'error', message: `⚠️ ${b('השעון המעורר המוזיקלי נכשל')}: ${(res && res.error) || 'שגיאה לא ידועה'}` };
         }
         // ─── Guest nutrition (delivered to the guest, see GUEST_JOBS) ────
         // Both builders read SQLite and format Hebrew directly — no LLM, so the
@@ -699,7 +778,7 @@ async function tick(): Promise<void> {
                 // fallback) so a broken job is never discovered by its absence.
                 await notifyOwner(
                     `⚠️ Astra: ${s.job} failed`,
-                    `Scheduled job "${s.job}" failed to run.\n\nError: ${err.message}`,
+                    `⚠️ ${b(`המשימה המתוזמנת "${s.job}" נכשלה`)}\n\nשגיאה: ${err.message}`,
                 );
             }
         }

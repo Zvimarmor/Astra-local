@@ -19,6 +19,7 @@ function compactEvent(e: any) {
         end: e.end?.dateTime || e.end?.date || null,
         all_day: Boolean(e.start?.date && !e.start?.dateTime),
         location: e.location || undefined,
+        colorId: e.colorId || undefined,
     };
 }
 
@@ -62,7 +63,8 @@ export const calendarTools = {
                 location: { type: "string", description: "Location or meeting link" },
                 description: { type: "string", description: "Notes for the event" },
                 startDateTime: { type: "string", description: "ISO start time, e.g. 2026-04-21T14:00:00" },
-                endDateTime: { type: "string", description: "ISO end time, e.g. 2026-04-21T15:00:00" }
+                endDateTime: { type: "string", description: "ISO end time, e.g. 2026-04-21T15:00:00" },
+                colorId: { type: "string", description: "Google Calendar colorId (1-11) for context-aware color coding" }
             },
             required: ["summary", "startDateTime", "endDateTime"]
         },
@@ -81,6 +83,7 @@ export const calendarTools = {
                         description: args.description,
                         start: { dateTime: args.startDateTime, timeZone: TIMEZONE },
                         end: { dateTime: args.endDateTime, timeZone: TIMEZONE },
+                        colorId: args.colorId || undefined,
                     },
                 });
                 console.log(`[Calendar] Added event: "${args.summary}" at ${args.startDateTime}`);

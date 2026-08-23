@@ -61,7 +61,7 @@ Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 do
 
 | Tool | Actions | Backed by |
 |---|---|---|
-| `manage_tasks` | `add`, `list`, `complete`, `delete`, `update`, `snooze`, `stale`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts` |
+| `manage_tasks` | `add`, `list`, `complete`, `delete`, `update`, `snooze`, `suggest`, `waiting`, `triage`, `rollover`, `stale`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts`, `task-queue.ts`, `duration-heuristics.ts` |
 | `manage_finances` | `add_expense`, `expense_summary`, `add_income`, `financial_overview`, `set_budget`, `list_budgets`, `budget_alerts` | `expenses.ts`, `budget.ts` |
 | `manage_calendar` | `list`, `add`, `delete` | `calendar.ts` (Google, service account) |
 | `manage_habits` | `track`, `log`, `list` | `habits.ts` |
@@ -70,17 +70,53 @@ Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 do
 | `assistant_utils` | `help`, `current_time`, `daily_status`, `speak`, `set_voice_mode`, `get_voice_mode`, `text_to_speech`, `list_whatsapp_media` | `daily-status.ts`, `voice.ts`, `whatsapp-media.ts` |
 | `manage_music` | `play`, `pause`, `next`, `previous`, `volume`, `now_playing`, `set_alarm`, `list_alarms`, `cancel_alarm` | `spotify.ts` → spotifyd (see §8) |
 | `manage_projects` | `add`, `list`, `status`, `breakdown`, `complete`, `delete` | `projects.ts` — progress derived from linked tasks, never stored |
-| `plan_day` | *(no action enum — one operation)* | `planner.ts` — tasks × calendar → time blocks |
+| `plan_day` | *(no action enum — one operation)* | `planner.ts` — rolling queue × calendar → time blocks, capped at 70% of free time |
 
 ### Deadlines: the thing that was actually missing
 
 `tasks.date` is the **creation** date and always was — written from `new Date()` at insert. It never
 meant "when is this due". So before 2026-08-07, "what's due this week?", "what's overdue?" and any
-deadline reminder were not unimplemented, they were **unanswerable**. `due_date` (nullable — NULL
-means "someday") is what makes the filters, `deadline_watch`, and `plan_day` possible at all.
+deadline reminder were not unimplemented, they were **unanswerable**. Adding a real date column is
+what makes the filters, `deadline_watch`, and `plan_day` possible at all.
 
-`estimate_minutes` exists for `plan_day`: with no duration there is nothing to pack. Tasks without
-one are assumed 45 min and flagged `~est` rather than silently treated as accurate.
+### The rolling queue (2026-08-23) — one date became two
+
+`due_date` was carrying two incompatible meanings: "the world punishes me if this slips" and "I
+meant to do this Tuesday". With only one column, every self-assigned plan that slipped rendered as
+a red **OVERDUE**, so the red list was permanently long and the two genuine deadlines in it were
+invisible. The fix is a split:
+
+| Column | Meaning | When the day passes |
+|---|---|---|
+| `deadline` | hard, external, rare | 🔴 overdue — the *only* thing that produces one |
+| `planned_date` | soft, self-assigned | 🔁 rolls forward to today, no alarm |
+
+Supporting columns on `tasks`: `state` (`inbox`/`planned`/`rolled_over`/`waiting`/`done` — refines
+`status`, which stays the coarse Pending/Completed authority), `rollover_count`,
+`last_rescheduled_at`, `task_kind`, `waiting_on`. `estimate_minutes` was **renamed**
+`estimated_minutes`; the tool layer still accepts the old parameter spelling so existing skills
+keep working. `due_date` is kept as a **legacy read mirror** of `COALESCE(deadline, planned_date)`
+and is written on every mutation — nothing should branch on it.
+
+**Migration direction is deliberate**: existing `due_date` values became `planned_date`, never
+`deadline`. We can't tell retroactively which were real; demoting a real deadline is recoverable
+(the user restates it), promoting a soft plan would recreate the exact false-alarm problem.
+
+`storage.rollOverTasks()` is idempotent by construction (afterwards no pending task has
+`planned_date < today`). `ensureDailyRollover()` guards it with a `settings` key so the repeated
+calls from `list`/`suggest`/`plan_day`/the 07:00 `recurring_gen` tick are free — correctness never
+depends on the guard, only cost does. That belt-and-braces matters: a Mac asleep at 07:00 still
+gets a correct queue on the first question of the day.
+
+`duration-heuristics.ts` infers `estimated_minutes` from the title when none is given — bilingual
+keyword tables plus explicit-duration parsing ("חצי שעה", "for 20 min"), bucketed quick 15 / chore
+30 / focus 45 / deep 90. **Rule-based, never LLM-based**: it runs inside the scheduler tick, which
+must stay deterministic and offline, and a Gemini call there would also burn the 20-req/day quota.
+
+`task-queue.ts` is the shared ranking layer (deadline urgency + priority + project relevance +
+rollover aging as an anti-starvation term), so `plan_day`, `suggest` and the briefings can't
+disagree about what matters next. `CAPACITY_FACTOR = 0.7` is the realism buffer — packing a day to
+100% manufactures the very backlog the queue exists to drain.
 
 ### Still switched off (code exists, commented out)
 
@@ -379,8 +415,8 @@ twice on 2026-08-06, that's the difference between a feature that works and one 
 | Job | When | Behaviour |
 |---|---|---|
 | `recurring_gen` | 07:00 daily | generates tasks from recurring templates |
-| `deadline_watch` | 07:30 daily | overdue + due-today + projects closing within 7d — **silent if nothing** |
-| `morning_briefing` | 08:00 daily | the day ahead |
+| `deadline_watch` | **disabled** (was 07:30) | merged into `morning_briefing`; job still callable |
+| `morning_briefing` | 08:00 daily | **the unified daily report** — agenda, deadlines, all open tasks, habits, money |
 | `budget_check` | 12:00 daily | silent unless a budget is breached |
 | `email_digest` | 17:00 daily | silent if no mail |
 | `stale_task_nudge` | Sun 19:00 | undated tasks pending 3+ weeks — **silent if nothing** |
@@ -388,8 +424,19 @@ twice on 2026-08-06, that's the difference between a feature that works and one 
 | `weekly_recap` | Sat 20:30 | week in review |
 | `monthly_finance_review` | 21:00 daily | self-gates to the last day of the month |
 
-`deadline_watch` is at 07:30 deliberately: after `recurring_gen` (07:00) so this morning's generated
-tasks are included, and before the 08:00 briefing so deadlines lead the day.
+`deadline_watch` used to fire at 07:30, half an hour before the briefing, each holding half the
+picture. Since 2026-08-18 its content (overdue / due-today / projects closing within 7d) is a
+section **inside** the 08:00 briefing, and the row is seeded `enabled = 0` — the morning briefing is
+the single source of truth for the day. `buildDeadlineWatch()` still exists for on-demand use;
+re-enable the row if you want it standalone again.
+
+**All proactive reports are 100% Hebrew** (since 2026-08-18). Wording, emoji, priority labels
+(`דחוף`/`בינוני`/`רגיל`) and layout live in `services/report-format.ts`, which every builder goes
+through — so the morning briefing, evening review and weekly recap cannot drift apart, and headers
+can't go back to being English over Hebrew task titles. Two rules that module enforces and that are
+easy to break by accident: reports **never truncate** ("…and 4 more" is banned — long lists are made
+readable by priority grouping, not by dropping rows), and all-day / midnight calendar entries render
+under a `📌 לאורך כל היום:` header instead of as `00:00 — …`.
 
 Adding one is a row in `schedules` plus a `case` in `runJob` — these nine are the pattern. Quiet
 hours (22:00–07:00 and Shabbat) suppress everything except `recurring_gen` and `music_alarm`.

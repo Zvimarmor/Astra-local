@@ -3,6 +3,7 @@ import {
     addTask, getPendingTasks, todayStr,
     type ProjectRow,
 } from './storage';
+import { inferDuration } from './duration-heuristics';
 
 /**
  * Projects ("missions") — a named objective that owns tasks.
@@ -139,8 +140,9 @@ export const projectTools = {
                         type: "object",
                         properties: {
                             title: { type: "string", description: "Step description" },
-                            due_date: { type: "string", description: "YYYY-MM-DD, optional" },
-                            estimate_minutes: { type: "number", description: "Rough minutes, optional" },
+                            planned_date: { type: "string", description: "When to do this step, YYYY-MM-DD, optional (soft — rolls forward)" },
+                            deadline: { type: "string", description: "Hard external deadline for this step, YYYY-MM-DD. Rare — the mission's target_date is usually the real constraint." },
+                            estimated_minutes: { type: "number", description: "Rough minutes, optional — inferred from the title when omitted" },
                             priority: { type: "string", enum: ["high", "medium", "low"] },
                         },
                         required: ["title"],
@@ -160,10 +162,20 @@ export const projectTools = {
                 const created: string[] = [];
                 for (const it of items) {
                     if (!it || !it.title) continue;
-                    const due = it.due_date && ISO_DATE.test(String(it.due_date)) ? String(it.due_date) : null;
+                    // A step of a mission gets a PLANNED date, not a deadline: the
+                    // mission's own target_date is the real constraint, and marking
+                    // every step "hard deadline" is what used to turn a breakdown
+                    // into a wall of red the next morning.
+                    const dateIn = it.planned_date ?? it.due_date;
+                    const planned = dateIn && ISO_DATE.test(String(dateIn)) ? String(dateIn) : null;
+                    const deadline = it.deadline && ISO_DATE.test(String(it.deadline)) ? String(it.deadline) : null;
+                    const explicit = Number(it.estimated_minutes ?? it.estimate_minutes);
+                    const guess = inferDuration(String(it.title));
                     const r = addTask(String(it.title), it.priority || 'medium', {
-                        dueDate: due,
-                        estimateMinutes: it.estimate_minutes ?? null,
+                        plannedDate: planned,
+                        deadline,
+                        estimatedMinutes: Number.isFinite(explicit) && explicit > 0 ? explicit : guess.minutes,
+                        taskKind: Number.isFinite(explicit) && explicit > 0 ? null : guess.kind,
                         projectId: id,
                     });
                     created.push(r.id);

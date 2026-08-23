@@ -47,9 +47,20 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 { name, description, parameters /* JSON Schema */, execute: async (args) => Record<string, any> }
 ```
 
-**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **10 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `assistant_utils`, plus the actionless `plan_day` — 54 actions total) and routes each `action` into the domain `execute()` underneath. Two more blocks (`manage_email`, `manage_photos`) are **commented out** in `mega-tools.ts`, as are their `HELP_META` entries.
+**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **10 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `assistant_utils`, plus the actionless `plan_day` — 58 actions total) and routes each `action` into the domain `execute()` underneath. Two more blocks (`manage_email`, `manage_photos`) are **commented out** in `mega-tools.ts`, as are their `HELP_META` entries.
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
+
+**Tasks are a rolling queue, not a dated list (2026-08-23).** `tasks` carries two dates with
+different meanings: `deadline` (hard, external, rare — the only thing that can make a task overdue)
+and `planned_date` (soft, self-assigned, rolled forward to today automatically by
+`storage.rollOverTasks()` when the day passes). Lifecycle lives in `state`
+(`inbox`/`planned`/`rolled_over`/`waiting`/`done`), which refines `status` rather than replacing it —
+`status` is still the coarse Pending/Completed authority every legacy reader uses. `due_date`
+survives only as a legacy read mirror of `COALESCE(deadline, planned_date)`; do not branch on it.
+`tools/duration-heuristics.ts` infers `estimated_minutes` from the title and must stay rule-based —
+it runs inside the deterministic scheduler tick. `tools/task-queue.ts` holds the shared ranking +
+the 70% capacity factor used by `plan_day` and the free-slot suggester.
 
 ### Two tool profiles — the guest agent
 
