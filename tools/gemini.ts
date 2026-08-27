@@ -165,6 +165,30 @@ export async function generateFromImage(
 }
 
 /**
+ * Audio: transcribe/understand a voice note. Same inline-bytes mechanism as
+ * `generateFromImage` — WhatsApp voice notes are OGG/Opus and run a few tens of
+ * KB, comfortably under the ~20MB inline ceiling, so the Files API isn't needed.
+ *
+ * The instruction goes in a text part *before* the audio: `generateContent`
+ * here builds a single user turn and doesn't wire `systemInstruction`, and for
+ * a one-shot transcription a leading text part behaves the same.
+ */
+export async function generateFromAudio(
+    prompt: string,
+    audio: Buffer,
+    mimeType: string = 'audio/ogg',
+    opts: GeminiOptions = {}
+): Promise<string> {
+    return generateContent(
+        [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: audio.toString('base64') } },
+        ],
+        opts
+    );
+}
+
+/**
  * Health probe for the dashboard. Cheap: lists models rather than generating,
  * so it costs no tokens and doesn't consume free-tier request quota for
  * generation.

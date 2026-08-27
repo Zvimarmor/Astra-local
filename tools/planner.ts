@@ -1,13 +1,26 @@
 import { getCalendarClient } from './google-auth';
 import { config } from './config';
-import { getPendingTasks, todayStr, type TaskRow } from './storage';
+import { getPendingTasks, updateTask, todayStr, ensureDailyRollover, type TaskRow } from './storage';
+import { rankTasks, usableCapacity, CAPACITY_FACTOR, type SizedTask } from './task-queue';
 
 /**
- * Day planner — fit today's tasks into the gaps between calendar events.
+ * Day planner — fit the rolling queue into the gaps between calendar events,
+ * up to a realistic fraction of the free time available.
  *
- * This is the payoff for `estimate_minutes` on tasks: without a duration there is
- * nothing to pack, so tasks lacking an estimate get a default and are flagged as
- * guesses rather than silently treated as accurate.
+ * TWO THINGS MAKE THIS DIFFERENT FROM "PACK THE DAY FULL"
+ *
+ * 1. CAPACITY. Only ~70% of free time is offered to tasks (CAPACITY_FACTOR).
+ *    Packing to 100% produces a plan that is already wrong by mid-morning, and
+ *    every task it displaces rolls over — the planner would be manufacturing the
+ *    backlog it exists to drain. The buffer is the plan's shock absorber.
+ *
+ * 2. RANKING, not arrival order. Candidates are scored by task-queue.ts (deadline
+ *    urgency, priority, project relevance, and how many times they've already
+ *    rolled), so the same "what matters next" answer comes out of plan_day, the
+ *    free-slot suggester and the briefings.
+ *
+ * Durations come from the task's estimate, or from the title heuristics when it
+ * has none — flagged `~est` so a bad guess is visible and correctable.
  *
  * Times are handled as local wall-clock minutes-from-midnight in the configured
  * timezone, and written back as naive ISO strings paired with `timeZone` — the
@@ -17,8 +30,6 @@ import { getPendingTasks, todayStr, type TaskRow } from './storage';
 
 const TIMEZONE = config.timezone;
 
-/** Default block length for a task with no estimate. */
-const DEFAULT_ESTIMATE_MIN = 45;
 /** Gap left between consecutive blocks. */
 const BREAK_MIN = 10;
 /** Ignore slivers of free time this short. */
@@ -89,34 +100,45 @@ function freeSlots(dayStart: number, dayEnd: number, busy: Busy[]): Slot[] {
 }
 
 /**
- * Greedy first-fit packing, tasks in the order getPendingTasks already returns
- * them (overdue and due-soon first, then priority). Deliberately not an
- * optimiser: a plan the user can predict beats a marginally tighter one, and
- * "most urgent thing first" is the ordering they'd expect.
+ * Greedy first-fit packing over ranked, pre-sized tasks, stopping at `capacity`.
+ *
+ * Deliberately not an optimiser: a plan the user can predict beats a marginally
+ * tighter one, and "most important thing first, in the first gap it fits" is the
+ * ordering they'd expect. The capacity ceiling is checked BEFORE the geometric
+ * fit, so a day with eight free hours still only gets ~5.6h of commitments even
+ * though the gaps could physically hold more.
+ *
+ * `deferred` and `overCapacity` are reported separately because they mean
+ * different things to the user: "no gap was the right shape" is a scheduling
+ * problem, "you're out of realistic hours" is a workload problem.
  */
-function packTasks(slots: Slot[], tasks: TaskRow[]): { blocks: Block[]; unplaced: TaskRow[] } {
+function packTasks(slots: Slot[], ranked: SizedTask[], capacity: number): {
+    blocks: Block[]; deferred: SizedTask[]; overCapacity: SizedTask[]; usedMinutes: number;
+} {
     const cursors = slots.map(s => s.start);
     const blocks: Block[] = [];
-    const unplaced: TaskRow[] = [];
+    const deferred: SizedTask[] = [];
+    const overCapacity: SizedTask[] = [];
+    let used = 0;
 
-    for (const task of tasks) {
-        const estimated = !task.estimate_minutes;
-        const need = task.estimate_minutes || DEFAULT_ESTIMATE_MIN;
+    for (const item of ranked) {
+        if (used + item.minutes > capacity) { overCapacity.push(item); continue; }
 
         let placed = false;
         for (let i = 0; i < slots.length; i++) {
-            if (cursors[i] + need <= slots[i].end) {
-                blocks.push({ start: cursors[i], end: cursors[i] + need, task, estimated });
-                cursors[i] += need + BREAK_MIN;
+            if (cursors[i] + item.minutes <= slots[i].end) {
+                blocks.push({ start: cursors[i], end: cursors[i] + item.minutes, task: item.task, estimated: item.guessed });
+                cursors[i] += item.minutes + BREAK_MIN;
+                used += item.minutes;
                 placed = true;
                 break;
             }
         }
-        if (!placed) unplaced.push(task);
+        if (!placed) deferred.push(item);
     }
 
     blocks.sort((a, b) => a.start - b.start);
-    return { blocks, unplaced };
+    return { blocks, deferred, overCapacity, usedMinutes: used };
 }
 
 async function fetchDayEvents(dateStr: string): Promise<{ busy: Busy[]; allDay: string[] }> {
@@ -158,8 +180,9 @@ export const plannerTools = {
     plan_day: {
         name: 'plan_day',
         description:
-            "Build a time-blocked plan for a day: reads the pending tasks and the Google Calendar, " +
-            "then fits tasks into the gaps between existing events. " +
+            "Build a capacity-aware time-blocked plan for a day: reads the rolling task queue and the " +
+            "Google Calendar, finds the free windows between events, and fills only ~70% of them with the " +
+            "highest-ranked tasks that fit — leaving slack so the plan survives a normal day. " +
             "Set write_to_calendar=true to actually create the blocks as calendar events.",
         parameters: {
             type: 'object',
@@ -170,8 +193,9 @@ export const plannerTools = {
                 include: {
                     type: 'string',
                     enum: ['due', 'all'],
-                    description: "'due' (default) = only tasks due by this date; 'all' = also pull in undated tasks to fill the day",
+                    description: "'due' (default) = tasks planned for this day, rolled over, or with a deadline by then; 'all' = also pull from the inbox to fill the day",
                 },
+                capacity_pct: { type: 'number', description: 'Percent of free time to commit (default 70). Raise it for a clear day you intend to grind through.' },
                 write_to_calendar: { type: 'boolean', description: 'Create the blocks as real calendar events (default false — propose only)' },
             },
         },
@@ -184,18 +208,33 @@ export const plannerTools = {
                     return { status: 'error', error: `day_end (${hhmm(dayEnd)}) must be at least ${MIN_USEFUL_SLOT_MIN} min after day_start (${hhmm(dayStart)}).` };
                 }
 
-                // Candidate tasks: due by this date, optionally topped up with undated ones.
-                const due = getPendingTasks('all').filter(t => t.due_date !== null && t.due_date <= date);
+                // Planning today is also the moment to bring yesterday's leftovers
+                // forward — otherwise the plan would be built against a stale queue.
+                if (date === todayStr()) ensureDailyRollover();
+
+                const factor = Number.isFinite(Number(args.capacity_pct))
+                    ? Math.min(100, Math.max(10, Number(args.capacity_pct))) / 100
+                    : CAPACITY_FACTOR;
+
+                // Candidates: what this day is actually for — anything planned for it
+                // or earlier (rollovers included), plus anything with a deadline by
+                // then. `waiting` tasks are excluded upstream by rankTasks().
+                const active = getPendingTasks('active');
+                const committed = active.filter(t =>
+                    (t.planned_date !== null && t.planned_date <= date) ||
+                    (t.deadline !== null && t.deadline <= date)
+                );
+                const committedIds = new Set(committed.map(t => t.id));
                 const candidates = (args.include === 'all')
-                    ? [...due, ...getPendingTasks('someday')]
-                    : due;
+                    ? [...committed, ...active.filter(t => !committedIds.has(t.id))]
+                    : committed;
 
                 if (!candidates.length) {
                     return {
                         status: 'success',
                         message: args.include === 'all'
                             ? `Nothing pending to schedule for ${date}.`
-                            : `No tasks due by ${date}. Try include="all" to fill the day with undated tasks.`,
+                            : `Nothing planned or due by ${date}. Try include="all" to pull from the backlog.`,
                     };
                 }
 
@@ -208,10 +247,17 @@ export const plannerTools = {
                     };
                 }
 
-                const { blocks, unplaced } = packTasks(slots, candidates);
+                const freeMinutes = slots.reduce((n, s) => n + (s.end - s.start), 0);
+                const capacity = usableCapacity(freeMinutes, factor);
+                const ranked = rankTasks(candidates, date);
+                const { blocks, deferred, overCapacity, usedMinutes } = packTasks(slots, ranked, capacity);
 
                 const lines: string[] = [`🗓 Plan for ${date}`];
                 if (allDay.length) lines.push(`   (all day: ${allDay.join(', ')})`);
+                lines.push(
+                    `   ${Math.round(freeMinutes / 6) / 10}h free · planning to ${Math.round(factor * 100)}% ` +
+                    `= ${Math.round(capacity / 6) / 10}h · committing ${Math.round(usedMinutes / 6) / 10}h`
+                );
                 lines.push('');
 
                 if (busy.length) {
@@ -226,18 +272,26 @@ export const plannerTools = {
                     lines.push('✅ Proposed blocks:');
                     for (const b of blocks) {
                         const flag = b.estimated ? ' ~est' : '';
-                        lines.push(`   ${hhmm(b.start)}–${hhmm(b.end)}  ${b.task.id} ${b.task.title}${flag}`);
+                        const rolled = (b.task.rollover_count || 0) > 0 ? ` 🔁${b.task.rollover_count}` : '';
+                        lines.push(`   ${hhmm(b.start)}–${hhmm(b.end)}  ${b.task.id} ${b.task.title}${flag}${rolled}`);
                     }
                 }
 
-                if (unplaced.length) {
-                    lines.push('', `⏭ Didn't fit (${unplaced.length}):`);
-                    for (const t of unplaced.slice(0, 8)) lines.push(`   ${t.id} ${t.title}`);
-                    if (unplaced.length > 8) lines.push(`   …and ${unplaced.length - 8} more`);
+                // Two different messages, because they call for two different responses.
+                if (overCapacity.length) {
+                    lines.push('', `🧯 Left out to keep the day realistic (${overCapacity.length}):`);
+                    for (const r of overCapacity.slice(0, 8)) lines.push(`   ${r.task.id} ${r.task.title} (~${r.minutes}m)`);
+                    if (overCapacity.length > 8) lines.push(`   …and ${overCapacity.length - 8} more`);
+                    lines.push('   These roll forward automatically — nothing is lost.');
+                }
+                if (deferred.length) {
+                    lines.push('', `⏭ No gap the right shape (${deferred.length}):`);
+                    for (const r of deferred.slice(0, 5)) lines.push(`   ${r.task.id} ${r.task.title} (~${r.minutes}m)`);
+                    if (deferred.length > 5) lines.push(`   …and ${deferred.length - 5} more`);
                 }
 
                 if (blocks.some(b => b.estimated)) {
-                    lines.push('', `~est = no time estimate, assumed ${DEFAULT_ESTIMATE_MIN} min.`);
+                    lines.push('', '~est = duration inferred from the task title, not set by you. Correct any that look wrong.');
                 }
 
                 // ── optionally write the blocks to the calendar ──
@@ -254,8 +308,14 @@ export const plannerTools = {
                                     description: 'Scheduled by Astra plan_day',
                                     start: { dateTime: `${date}T${hhmm(b.start)}:00`, timeZone: TIMEZONE },
                                     end: { dateTime: `${date}T${hhmm(b.end)}:00`, timeZone: TIMEZONE },
+                                    colorId: '3', // Grape — focused work block
                                 },
                             });
+                            // Committing a block to the calendar IS the commitment,
+                            // so the queue is updated to match. Without this the task
+                            // still looks unplanned, and tomorrow's rollover would
+                            // count a day the user actually blocked out as a slip.
+                            updateTask(b.task.id, { plannedDate: date, state: 'planned' });
                             written++;
                         } catch (e: any) {
                             writeErrors.push(`${b.task.id}: ${e.message}`);
@@ -270,7 +330,11 @@ export const plannerTools = {
                 return {
                     status: 'success',
                     planned: blocks.length,
-                    unplaced: unplaced.length,
+                    free_minutes: freeMinutes,
+                    capacity_minutes: capacity,
+                    committed_minutes: usedMinutes,
+                    deferred: deferred.length,
+                    over_capacity: overCapacity.length,
                     written,
                     message: lines.join('\n'),
                 };

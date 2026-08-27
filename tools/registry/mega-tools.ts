@@ -11,6 +11,7 @@ import { voiceTools } from '../voice';
 import { notesTools } from '../notes';
 import { projectTools } from '../projects';
 import { plannerTools } from '../planner';
+import { transitTools } from '../transit';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -67,11 +68,12 @@ function badAction(action: string, valid: string[]): Record<string, any> {
  */
 interface HelpEntry { category: string; blurb: string; example: string; }
 const HELP_META: Record<string, HelpEntry> = {
-    manage_tasks: { category: '📋 Productivity', blurb: 'to-dos, deadlines & recurring reminders', example: '"Add a task to call the bank by Friday" · "What\'s overdue?"' },
+    manage_tasks: { category: '📋 Productivity', blurb: 'rolling task queue — nothing gets lost, nothing false-alarms', example: '"Add a task to call the bank by Friday" · "I have 30 free minutes, what should I do?"' },
     manage_projects: { category: '📋 Productivity', blurb: 'projects/missions with progress & target dates', example: '"New mission: Dynamics exam by Aug 20" · "How\'s the exam project going?"' },
-    plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
+    plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar, to 70% capacity', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm" · "Cancel the dentist"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
+    manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes & commute time-blocking', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "תחסום לי נסיעה ליעד לפני הפגישה"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
@@ -112,27 +114,39 @@ export const megaTools = {
     manage_tasks: {
         name: 'manage_tasks',
         description:
-            "Manage the user's to-do list and recurring task templates. " +
-            "Choose action: 'add' (needs title; optional priority, due_date, estimate_minutes, project), " +
-            "'list' (optional filter: all/today/week/overdue/someday), " +
-            "'complete' (needs task_id), 'delete' (needs task_id), " +
-            "'update' (task_id + any field to change), 'snooze' (task_id + due_date), " +
+            "Manage the user's rolling task queue and recurring task templates. " +
+            "TWO KINDS OF DATE, and the difference matters: `planned_date` is when the user INTENDS to " +
+            "do it (soft — unfinished tasks roll forward to today automatically and are never 'overdue'); " +
+            "`deadline` is a HARD external constraint (a form closing, a flight, an exam) and is the only " +
+            "thing that can make a task overdue. Default to planned_date; only set a deadline when the " +
+            "user names a real external one. " +
+            "Choose action: 'add' (needs title; optional priority, planned_date, deadline, estimated_minutes, project), " +
+            "'list' (optional filter), 'complete' (needs task_id), 'delete' (needs task_id), " +
+            "'update' (task_id + any field to change), 'snooze' (task_id + planned_date — moves the SOFT date), " +
+            "'suggest' (needs available_minutes — 'I have 30 free minutes, what should I do?'), " +
+            "'waiting' (task_id + waiting_on — park it as blocked on someone else), " +
+            "'triage' (queue health: what keeps rolling over), 'rollover' (force the daily carry-forward), " +
             "'stale' (long-pending undated tasks), " +
             "'add_recurring' (needs title + frequency; weekly needs day_of_week 0-6, monthly needs day_of_month 1-31), " +
             "'list_recurring', 'remove_recurring' (needs recurring_id). " +
-            "ALWAYS pass due_date as YYYY-MM-DD — resolve words like 'Friday' or 'next week' to a real date yourself.",
+            "ALWAYS pass dates as YYYY-MM-DD — resolve words like 'Friday' or 'next week' to a real date yourself. " +
+            "estimated_minutes is inferred from the title when omitted, so don't ask the user for it.",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring'], description: 'Which task operation to perform' },
+                action: { type: 'string', enum: ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'suggest', 'waiting', 'triage', 'rollover', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring'], description: 'Which task operation to perform' },
                 title: { type: 'string', description: 'Task description (for add / add_recurring / update)' },
                 priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Task priority (default medium)' },
-                task_id: { type: 'string', description: 'Task ID like T1, or part of the title (for complete / delete / update / snooze)' },
-                due_date: { type: 'string', description: "Deadline as YYYY-MM-DD (for add / update / snooze). 'clear' removes it." },
-                estimate_minutes: { type: 'number', description: 'Rough minutes the task needs — enables day planning' },
-                project: { type: 'string', description: 'Project/mission name or id to file the task under' },
+                task_id: { type: 'string', description: 'Task ID like T1, or part of the title (for complete / delete / update / snooze / waiting)' },
+                planned_date: { type: 'string', description: "When the user plans to DO it, YYYY-MM-DD. Soft — rolls forward on its own. 'clear' removes it." },
+                deadline: { type: 'string', description: "HARD external deadline, YYYY-MM-DD. Only for real constraints. 'clear' removes it." },
+                estimated_minutes: { type: 'number', description: 'How long the task takes. Omit to have it inferred from the title.' },
+                project: { type: 'string', description: 'Project/mission name or id (files the task, or scopes a suggest)' },
                 notes: { type: 'string', description: 'Extra context on the task' },
-                filter: { type: 'string', enum: ['all', 'today', 'week', 'overdue', 'someday'], description: 'Which pending tasks to list (default all)' },
+                filter: { type: 'string', enum: ['all', 'active', 'today', 'week', 'overdue', 'inbox', 'planned', 'rolling', 'waiting', 'chronic', 'someday'], description: "Which pending tasks to list (default all). 'overdue' = missed HARD deadlines only; 'rolling' = carried over from an earlier day; 'chronic' = rolled over 3+ times" },
+                available_minutes: { type: 'number', description: "For 'suggest': how many minutes of free time there are right now" },
+                min_minutes: { type: 'number', description: "For 'suggest': ignore tasks shorter than this" },
+                waiting_on: { type: 'string', description: "For 'waiting': who/what it's blocked on. Pass 'clear' to un-park it." },
                 days: { type: 'number', description: "For 'stale': how old counts as stale (default 21)" },
                 frequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Recurrence (for add_recurring)' },
                 day_of_week: { type: 'number', description: 'Weekly recurrence day: 0=Sunday .. 6=Saturday' },
@@ -142,18 +156,26 @@ export const megaTools = {
             required: ['action'],
         },
         execute: async (a: any = {}) => {
+            // `due_date` is still accepted from older skills/phrasings and is mapped
+            // to planned_date (never deadline) — see the migration note in storage.ts.
+            const planned = a.planned_date ?? a.due_date;
+            const estimate = a.estimated_minutes ?? a.estimate_minutes;
             switch (a.action) {
-                case 'add': return call(taskTools as DomainMap, 'add_task', { title: a.title, priority: a.priority, due_date: a.due_date, estimate_minutes: a.estimate_minutes, project: a.project, notes: a.notes });
+                case 'add': return call(taskTools as DomainMap, 'add_task', { title: a.title, priority: a.priority, planned_date: planned, deadline: a.deadline, estimated_minutes: estimate, project: a.project, notes: a.notes });
                 case 'list': return call(taskTools as DomainMap, 'list_tasks', { filter: a.filter });
                 case 'complete': return call(taskTools as DomainMap, 'complete_task', { taskId: a.task_id });
                 case 'delete': return call(taskTools as DomainMap, 'delete_task', { taskId: a.task_id });
-                case 'update': return call(taskTools as DomainMap, 'update_task', { taskId: a.task_id, title: a.title, priority: a.priority, due_date: a.due_date, estimate_minutes: a.estimate_minutes, project: a.project, notes: a.notes });
-                case 'snooze': return call(taskTools as DomainMap, 'snooze_task', { taskId: a.task_id, until: a.due_date });
+                case 'update': return call(taskTools as DomainMap, 'update_task', { taskId: a.task_id, title: a.title, priority: a.priority, planned_date: planned, deadline: a.deadline, estimated_minutes: estimate, project: a.project, notes: a.notes });
+                case 'snooze': return call(taskTools as DomainMap, 'snooze_task', { taskId: a.task_id, until: planned ?? a.deadline });
+                case 'suggest': return call(taskTools as DomainMap, 'suggest_tasks', { available_minutes: a.available_minutes, project: a.project, min_minutes: a.min_minutes });
+                case 'waiting': return call(taskTools as DomainMap, 'wait_task', { taskId: a.task_id, waiting_on: a.waiting_on });
+                case 'triage': return call(taskTools as DomainMap, 'triage_tasks', {});
+                case 'rollover': return call(taskTools as DomainMap, 'roll_over_tasks', {});
                 case 'stale': return call(taskTools as DomainMap, 'stale_tasks', { days: a.days });
                 case 'add_recurring': return call(recurringTaskTools as DomainMap, 'add_recurring_task', { title: a.title, priority: a.priority, frequency: a.frequency, day_of_week: a.day_of_week, day_of_month: a.day_of_month });
                 case 'list_recurring': return call(recurringTaskTools as DomainMap, 'list_recurring_tasks', {});
                 case 'remove_recurring': return call(recurringTaskTools as DomainMap, 'remove_recurring_task', { id: a.recurring_id });
-                default: return badAction(a.action, ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring']);
+                default: return badAction(a.action, ['add', 'list', 'complete', 'delete', 'update', 'snooze', 'suggest', 'waiting', 'triage', 'rollover', 'stale', 'add_recurring', 'list_recurring', 'remove_recurring']);
             }
         },
     },
@@ -184,8 +206,9 @@ export const megaTools = {
                         type: 'object',
                         properties: {
                             title: { type: 'string', description: 'Step description' },
-                            due_date: { type: 'string', description: 'YYYY-MM-DD, optional' },
-                            estimate_minutes: { type: 'number', description: 'Rough minutes, optional' },
+                            planned_date: { type: 'string', description: 'When to do this step, YYYY-MM-DD, optional (soft — rolls forward)' },
+                            deadline: { type: 'string', description: 'Hard external deadline for this step, YYYY-MM-DD. Rare — the project target_date is usually the real constraint.' },
+                            estimated_minutes: { type: 'number', description: 'Rough minutes, optional — inferred from the title when omitted' },
                             priority: { type: 'string', enum: ['high', 'medium', 'low'] },
                         },
                         required: ['title'],
@@ -248,9 +271,20 @@ export const megaTools = {
         name: 'manage_calendar',
         description:
             "Read, add or delete Google Calendar events. Choose action: 'list' (optional max_results), " +
-            "'add' (needs summary, start, end in ISO format e.g. 2026-06-23T14:00:00; optional location, description), " +
+            "'add' (needs summary, start, end in ISO format e.g. 2026-06-23T14:00:00; optional location, description, colorId), " +
             "or 'delete' (needs event_id — either the id from 'list' or part of the event title; " +
-            "if the title matches several events nothing is deleted and the candidates come back to choose from).",
+            "if the title matches several events nothing is deleted and the candidates come back to choose from). " +
+            "For 'add', always pick the single most appropriate colorId from context — do not leave it blank and do not ask the user unless truly ambiguous:\n" +
+            "  '9'  Blueberry (dark blue) — meetings: Zoom or in-person business meetings, professional syncs. This is the DEFAULT if nothing else matches.\n" +
+            "  '11' Tomato (red) — deadlines, exam dates, submission cutoffs, critical alerts.\n" +
+            "  '3'  Grape (purple) — focused work, creative sessions, coding, deep focus time.\n" +
+            "  '2'  Sage/Avocado (light green) — quality time, dates, plans with partner Einav (עינב). STRICT: any event involving Einav/עינב always gets '2'.\n" +
+            "  '10' Basil (military green) — army, reserve duty (מילואים, צו), defense-related obligations. STRICT: any army/reserves event always gets '10'.\n" +
+            "  '6'  Tangerine/Mango (orange) — gym, sports, fitness, doctor/health appointments.\n" +
+            "  '5'  Banana (yellow) — birthdays, celebrations, social & family events.\n" +
+            "  '1'  Lavender (light purple) — parties, leisure, entertainment, fun outings.\n" +
+            "  '8'  Graphite/Cocoa — travel, commute, errands, routine home maintenance.\n" +
+            "The Einav and army rules override every other rule if both could apply.",
         parameters: {
             type: 'object',
             properties: {
@@ -262,13 +296,22 @@ export const megaTools = {
                 description: { type: 'string', description: 'Event notes (for add)' },
                 start: { type: 'string', description: 'ISO start datetime e.g. 2026-06-23T14:00:00 (for add)' },
                 end: { type: 'string', description: 'ISO end datetime e.g. 2026-06-23T15:00:00 (for add)' },
+                colorId: {
+                    type: 'string',
+                    enum: ['1', '2', '3', '5', '6', '8', '9', '10', '11'],
+                    description:
+                        "Google Calendar colorId for context-aware color coding (for add). " +
+                        "9=meetings (default), 11=deadlines/exams/critical, 3=focused work/coding, " +
+                        "2=Einav/עינב quality time (strict), 10=army/מילואים (strict), 6=gym/sports/health, " +
+                        "5=birthdays/celebrations/family, 1=parties/leisure/fun, 8=travel/commute/errands.",
+                },
             },
             required: ['action'],
         },
         execute: async (a: any = {}) => {
             switch (a.action) {
                 case 'list': return call(calendarTools as DomainMap, 'list_calendar_events', { maxResults: a.max_results });
-                case 'add': return call(calendarTools as DomainMap, 'add_calendar_event', { summary: a.summary, location: a.location, description: a.description, startDateTime: a.start, endDateTime: a.end });
+                case 'add': return call(calendarTools as DomainMap, 'add_calendar_event', { summary: a.summary, location: a.location, description: a.description, startDateTime: a.start, endDateTime: a.end, colorId: a.colorId || '9' });
                 case 'delete': return call(calendarTools as DomainMap, 'delete_calendar_event', { eventId: a.event_id });
                 default: return badAction(a.action, ['list', 'add', 'delete']);
             }
@@ -296,6 +339,55 @@ export const megaTools = {
                 case 'log': return call(habitTools as DomainMap, 'log_habit', { name: a.name });
                 case 'list': return call(habitTools as DomainMap, 'list_habits', {});
                 default: return badAction(a.action, ['track', 'log', 'list']);
+            }
+        },
+    },
+
+    // ─── Transit (Google Maps Directions, transit mode) ──────────────
+    // Replies are Hebrew-first: this answers "איך אני מגיע ל...?" on WhatsApp.
+    // Needs GOOGLE_MAPS_API_KEY (a plain API key — the Calendar service account
+    // does NOT authenticate Directions); without it the tool returns a Hebrew
+    // "no key configured" message rather than failing.
+    manage_transit: {
+        name: 'manage_transit',
+        description:
+            "Public transport (bus/train/subway/tram) routing in Israel via Google Maps. Choose action: " +
+            "'plan_route' (needs destination; optional origin — defaults to the user's home address — plus " +
+            "arrival_time OR departure_time, transit_mode, max_routes) — returns departure/arrival times, " +
+            "total duration, line numbers, boarding stops and transfers; or " +
+            "'block_travel_time' (needs destination + arrival_time) — looks the route up and ALSO writes a " +
+            "'🚆 נסיעה אל <יעד>' event into Google Calendar with colorId 8 (Graphite/travel) covering the commute. " +
+            "arrival_time = 'be there by'; departure_time = 'leave at'. Never pass both. " +
+            "Times are ISO datetimes in Israel local time, e.g. 2026-08-28T09:00:00 (Unix seconds also accepted). " +
+            "Use 'block_travel_time' only when the user asks to reserve/block the travel in the calendar; " +
+            "otherwise 'plan_route' and report the answer.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['plan_route', 'block_travel_time'], description: 'Look up a route, or look it up and block it in the calendar' },
+                destination: { type: 'string', description: 'Where the user is going (address or place name)' },
+                origin: { type: 'string', description: "Where the user starts. Omit to use the user's home address." },
+                arrival_time: { type: 'string', description: 'Be there BY this time, ISO e.g. 2026-08-28T09:00:00 (required for block_travel_time)' },
+                departure_time: { type: 'string', description: 'Leave AT this time, ISO. Do not combine with arrival_time. (plan_route only)' },
+                transit_mode: { type: 'string', description: "Restrict vehicles: 'bus', 'train', 'subway', 'tram' — comma-separated. Omit for all." },
+                max_routes: { type: 'number', description: 'How many alternatives to return, 1-5 (default 3). For plan_route.' },
+                buffer_minutes: { type: 'number', description: 'For block_travel_time: arrive this many minutes before arrival_time (default 10).' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'plan_route': return call(transitTools as DomainMap, 'plan_transit_route', {
+                    origin: a.origin, destination: a.destination,
+                    arrival_time: a.arrival_time, departure_time: a.departure_time,
+                    transit_mode: a.transit_mode, max_routes: a.max_routes,
+                });
+                case 'block_travel_time': return call(transitTools as DomainMap, 'block_travel_time', {
+                    origin: a.origin, destination: a.destination,
+                    arrival_time: a.arrival_time, transit_mode: a.transit_mode,
+                    buffer_minutes: a.buffer_minutes,
+                });
+                default: return badAction(a.action, ['plan_route', 'block_travel_time']);
             }
         },
     },

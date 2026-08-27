@@ -47,9 +47,20 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 { name, description, parameters /* JSON Schema */, execute: async (args) => Record<string, any> }
 ```
 
-**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **10 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `assistant_utils`, plus the actionless `plan_day` — 54 actions total) and routes each `action` into the domain `execute()` underneath. Two more blocks (`manage_email`, `manage_photos`) are **commented out** in `mega-tools.ts`, as are their `HELP_META` entries.
+**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **11 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `assistant_utils`, plus the actionless `plan_day` — 60 actions total) and routes each `action` into the domain `execute()` underneath. Two more blocks (`manage_email`, `manage_photos`) are **commented out** in `mega-tools.ts`, as are their `HELP_META` entries.
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
+
+**Tasks are a rolling queue, not a dated list (2026-08-23).** `tasks` carries two dates with
+different meanings: `deadline` (hard, external, rare — the only thing that can make a task overdue)
+and `planned_date` (soft, self-assigned, rolled forward to today automatically by
+`storage.rollOverTasks()` when the day passes). Lifecycle lives in `state`
+(`inbox`/`planned`/`rolled_over`/`waiting`/`done`), which refines `status` rather than replacing it —
+`status` is still the coarse Pending/Completed authority every legacy reader uses. `due_date`
+survives only as a legacy read mirror of `COALESCE(deadline, planned_date)`; do not branch on it.
+`tools/duration-heuristics.ts` infers `estimated_minutes` from the title and must stay rule-based —
+it runs inside the deterministic scheduler tick. `tools/task-queue.ts` holds the shared ranking +
+the 70% capacity factor used by `plan_day` and the free-slot suggester.
 
 ### Two tool profiles — the guest agent
 
@@ -99,6 +110,16 @@ These are **standalone long-running processes, independent of OpenClaw and the a
 - **Skills are loaded from `~/.openclaw/workspace/skills/`, NOT from this repo's `skills/`.** They are independent copies and they have silently drifted before (a stale live skill was pointing the model at an `assistant_utils(action="web_search")` action that no longer exists). Editing `skills/` here changes nothing until you copy it across — see `docs/TOOL-INVENTORY.md` §5 for the drift check.
 - **`web_search` runs on a local SearXNG** (`127.0.0.1:8888`, launchd `com.astra.searxng`) since 2026-08-06; DuckDuckGo IP-blocks this host and Gemini's Google Search grounding is blocked on the free-tier key. `json` must stay in SearXNG's `search.formats` or the provider silently gets HTML back. Details + gotchas in `docs/TOOL-INVENTORY.md` §8.
 - **Never `brew services start spotifyd`** — it regenerates the plist and drops `--config-path` (device then registers under the wrong name and every playback call fails) and `ProcessType Interactive` (the audio-stutter fix). Use `launchctl bootstrap` with `~/Library/LaunchAgents/homebrew.mxcl.spotifyd.plist`. See `docs/TOOL-INVENTORY.md` §9.
+
+**Transit uses a different Google credential than Calendar (2026-08-27).** `tools/transit.ts` calls
+the Maps **Directions API**, which is key-authenticated (`GOOGLE_MAPS_API_KEY`) and does *not*
+accept the service-account OAuth that `tools/calendar.ts` uses — so having Calendar working tells
+you nothing about whether transit will. "Directions API" must be enabled on the Cloud project
+separately or every call returns `REQUEST_DENIED`. With no key the tool degrades to a Hebrew
+"not configured" message rather than throwing. `HOME_ADDRESS` is the default trip origin.
+The Directions API also plans **forward only** — an `arrival_time`/`departure_time` in the past is
+rejected, so the tool checks for that itself and answers in Hebrew instead of surfacing
+`INVALID_REQUEST`.
 
 ## Secrets
 

@@ -173,6 +173,67 @@ db.exec(`
     if (!have.has('notes')) db.exec('ALTER TABLE tasks ADD COLUMN notes TEXT');
 }
 
+// Migration (2026-08-23): the ROLLING TASK QUEUE.
+//
+// THE PROBLEM THIS FIXES: a single `due_date` column was carrying two completely
+// different meanings — "the world will punish me if this slips" (a real external
+// deadline) and "I meant to do this on Tuesday" (a plan I made for myself). Since
+// only one column existed, every plan that slipped a day became an "OVERDUE 🔴"
+// alarm. After a few weeks the red list was mostly self-imposed noise and the two
+// genuinely immovable deadlines in it were invisible. Alarm fatigue by design.
+//
+// THE SPLIT:
+//   deadline      — HARD, external, rare. Only this can make a task overdue.
+//   planned_date  — SOFT, self-assigned, rolls forward freely. Never overdue.
+//
+// Existing `due_date` values migrate to `planned_date`, NOT to `deadline`. That
+// direction is deliberate: we cannot tell retroactively which of the old dates
+// were real deadlines, and demoting a real deadline to a plan is recoverable
+// (the user re-states it) while promoting a soft plan to a hard deadline would
+// recreate exactly the false-alarm problem this migration exists to end.
+//
+// `due_date` itself is KEPT and mirrored to COALESCE(deadline, planned_date) on
+// every write. It is a legacy read mirror only — nothing should branch on it —
+// but it keeps any not-yet-rebuilt `dist/` consumer and the existing index honest.
+{
+    let cols = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+    let have = new Set(cols.map(c => c.name));
+
+    // `estimate_minutes` → `estimated_minutes`. One canonical name; the tool layer
+    // still ACCEPTS the old parameter spelling so existing skills keep working.
+    if (have.has('estimate_minutes') && !have.has('estimated_minutes')) {
+        db.exec('ALTER TABLE tasks RENAME COLUMN estimate_minutes TO estimated_minutes');
+        cols = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+        have = new Set(cols.map(c => c.name));
+    }
+
+    const addCol = (name: string, decl: string) => {
+        if (!have.has(name)) { db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${decl}`); have.add(name); }
+    };
+    addCol('estimated_minutes', 'INTEGER');
+    addCol('planned_date', 'TEXT');
+    addCol('deadline', 'TEXT');
+    addCol('state', 'TEXT');
+    addCol('task_kind', 'TEXT');
+    addCol('waiting_on', 'TEXT');
+    addCol('rollover_count', 'INTEGER NOT NULL DEFAULT 0');
+    addCol('last_rescheduled_at', 'TEXT');
+
+    // Backfill, idempotent — each UPDATE only touches rows not yet migrated.
+    db.exec(`
+        UPDATE tasks SET planned_date = due_date
+         WHERE planned_date IS NULL AND due_date IS NOT NULL;
+
+        UPDATE tasks SET state = CASE
+                WHEN status = 'Completed' THEN 'done'
+                WHEN planned_date IS NOT NULL OR deadline IS NOT NULL THEN 'planned'
+                ELSE 'inbox' END
+         WHERE state IS NULL;
+
+        UPDATE tasks SET rollover_count = 0 WHERE rollover_count IS NULL;
+    `);
+}
+
 // Projects ("missions") — a named objective that owns tasks. Progress is always
 // derived from the linked tasks rather than stored, so it can't drift out of sync
 // with reality.
@@ -189,6 +250,9 @@ db.exec(`
 
     CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date) WHERE due_date IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id) WHERE project_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks(deadline) WHERE deadline IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tasks_planned ON tasks(planned_date) WHERE planned_date IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 `);
 
 // Habit log history. The `habits` table only ever stored `last_logged_date`, which
@@ -223,16 +287,18 @@ db.exec(`
 {
     const ensure = db.prepare(
         `INSERT INTO schedules (job, hour, minute, days, enabled, catch_up)
-         SELECT ?, ?, ?, ?, 1, 1
+         SELECT ?, ?, ?, ?, ?, 1
          WHERE NOT EXISTS (SELECT 1 FROM schedules WHERE job = ?)`
     );
     // weekly_recap: Saturday 20:30 (after Shabbat quiet ends at 20:00), days '6' = Sat.
     // monthly_finance_review: scheduled daily 21:00; the builder self-gates to the LAST
     //   day of the month so the month-to-date overview covers the full ending month
     //   (no day_of_month column needed).
-    // deadline_watch: 07:30 daily, just after recurring_gen (07:00) so tasks
-    //   generated this morning are already in the list, and before the 08:00
-    //   briefing so deadlines lead the day. Self-silences when nothing is due.
+    // deadline_watch: seeded DISABLED (2026-08-18). Its content — overdue,
+    //   due-today and closing projects — is now a section inside the 08:00
+    //   morning briefing, which is the single source of truth for the day. Two
+    //   pings 30 minutes apart, each holding half the picture, was clutter. The
+    //   job itself still works; enable this row if you want it back standalone.
     // stale_task_nudge: Sunday 19:00 — start of the Israeli work week, and a
     //   sane moment to prune. Also self-silences.
     // guest_nutrition_checkin: 18:00 daily — silent unless she still has a large
@@ -240,16 +306,16 @@ db.exec(`
     // guest_nutrition_report: 21:00 daily — her Hebrew end-of-day summary. Both
     //   deliver to the GUEST number, not the owner's (see GUEST_JOBS in the
     //   scheduler), and are skipped entirely when GUEST_WHATSAPP_TARGET is unset.
-    const extras: [string, number, number, string][] = [
-        ['weekly_recap', 20, 30, '6'],
-        ['monthly_finance_review', 21, 0, 'daily'],
-        ['deadline_watch', 7, 30, 'daily'],
-        ['stale_task_nudge', 19, 0, '0'],
-        ['guest_nutrition_checkin', 18, 0, 'daily'],
-        ['guest_nutrition_report', 21, 0, 'daily'],
+    const extras: [string, number, number, string, number][] = [
+        ['weekly_recap', 20, 30, '6', 1],
+        ['monthly_finance_review', 21, 0, 'daily', 1],
+        ['deadline_watch', 7, 30, 'daily', 0],
+        ['stale_task_nudge', 19, 0, '0', 1],
+        ['guest_nutrition_checkin', 18, 0, 'daily', 1],
+        ['guest_nutrition_report', 21, 0, 'daily', 1],
     ];
     const tx = db.transaction(() => {
-        for (const [job, h, m, days] of extras) ensure.run(job, h, m, days, job);
+        for (const [job, h, m, days, enabled] of extras) ensure.run(job, h, m, days, enabled, job);
     });
     tx();
 }
@@ -314,11 +380,36 @@ export function dateOffsetStr(days: number): string {
     return d.toLocaleDateString('sv-SE', { timeZone: config.timezone });
 }
 
+/**
+ * The lifecycle of a task. `status` ('Pending'/'Completed') stays the coarse
+ * authority — every legacy query and the dashboard read it — and `state` refines
+ * what "Pending" means:
+ *
+ *   inbox        captured, not yet scheduled. The backlog. Not overdue, ever.
+ *   planned      has a planned_date (and/or a deadline) in the future.
+ *   rolled_over  was planned for an earlier day and didn't get done. STILL ACTIVE,
+ *                not a failure — the queue rolls it forward instead of alarming.
+ *   waiting      blocked on someone else. Excluded from planning and slot-filling.
+ *   done         mirrors status='Completed'.
+ */
+export type TaskState = 'inbox' | 'planned' | 'rolled_over' | 'waiting' | 'done';
+
+/** A task that has rolled this many times is chronically avoided, not merely late. */
+export const CHRONIC_ROLLOVER_THRESHOLD = 3;
+
 export interface TaskFields {
-    dueDate?: string | null;
-    estimateMinutes?: number | null;
+    /** Soft, self-assigned execution date. Rolls forward. Never causes "overdue". */
+    plannedDate?: string | null;
+    /** Hard external deadline. The ONLY thing that can make a task overdue. */
+    deadline?: string | null;
+    estimatedMinutes?: number | null;
+    taskKind?: string | null;
+    state?: TaskState;
+    waitingOn?: string | null;
     projectId?: number | null;
     notes?: string | null;
+    /** @deprecated legacy alias for `plannedDate`, kept so old callers compile. */
+    dueDate?: string | null;
 }
 
 export interface TaskRow {
@@ -327,65 +418,145 @@ export interface TaskRow {
     title: string;
     status: string;
     priority: string;
-    due_date: string | null;
-    estimate_minutes: number | null;
+    planned_date: string | null;
+    deadline: string | null;
+    state: TaskState;
+    task_kind: string | null;
+    waiting_on: string | null;
+    rollover_count: number;
+    last_rescheduled_at: string | null;
+    estimated_minutes: number | null;
     project_id: number | null;
     notes: string | null;
     project_name?: string | null;
+    project_target_date?: string | null;
+    /** Legacy mirror of COALESCE(deadline, planned_date). Do not branch on it. */
+    due_date: string | null;
 }
 
-export function addTask(title: string, priority: string = 'medium', fields: TaskFields = {}): { id: string; title: string } {
+/** The columns every task read projects. One place to edit. */
+const TASK_COLUMNS = `
+    t.id, t.date, t.title, t.status, t.priority,
+    t.planned_date, t.deadline, t.state, t.task_kind, t.waiting_on,
+    COALESCE(t.rollover_count, 0) AS rollover_count, t.last_rescheduled_at,
+    t.estimated_minutes, t.project_id, t.notes, t.due_date`;
+
+/** Resolve `dueDate` (legacy) onto `plannedDate` without clobbering an explicit one. */
+function normalizeFields(fields: TaskFields): TaskFields {
+    if (fields.dueDate !== undefined && fields.plannedDate === undefined) {
+        return { ...fields, plannedDate: fields.dueDate };
+    }
+    return fields;
+}
+
+export function addTask(title: string, priority: string = 'medium', fieldsIn: TaskFields = {}): { id: string; title: string } {
+    const fields = normalizeFields(fieldsIn);
     const id = getNextTaskId();
-    const stmt = db.prepare(
-        `INSERT INTO tasks (id, date, title, status, priority, due_date, estimate_minutes, project_id, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-    stmt.run(
+    const plannedDate = fields.plannedDate ?? null;
+    const deadline = fields.deadline ?? null;
+    // A task is 'planned' the moment it has any date attached; otherwise it lands
+    // in the inbox, which is a legitimate resting place, not a backlog of shame.
+    const state: TaskState = fields.state ?? ((plannedDate || deadline) ? 'planned' : 'inbox');
+
+    db.prepare(
+        `INSERT INTO tasks (id, date, title, status, priority, planned_date, deadline, due_date,
+                            state, task_kind, waiting_on, rollover_count,
+                            estimated_minutes, project_id, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
+    ).run(
         id, todayStr(), title, 'Pending', priority,
-        fields.dueDate ?? null, fields.estimateMinutes ?? null, fields.projectId ?? null, fields.notes ?? null
+        plannedDate, deadline, deadline ?? plannedDate,
+        state, fields.taskKind ?? null, fields.waitingOn ?? null,
+        fields.estimatedMinutes ?? null, fields.projectId ?? null, fields.notes ?? null
     );
     return { id, title };
 }
 
-export type TaskFilter = 'all' | 'today' | 'week' | 'overdue' | 'someday';
-
 /**
- * Pending tasks, optionally filtered by deadline window.
+ * Filters, and what each one MEANS now that plan and deadline are separate:
  *
- * Ordering is deliberate: overdue and due-soon first, undated ("someday") last,
- * then high→low priority. The old ordering was by numeric task id, which meant
- * the list order carried no information about what actually needed doing.
+ *   overdue  — ONLY missed hard deadlines. This is the red list, and it is short.
+ *   rolling  — carried over from an earlier day. Amber, not red. Not a failure.
+ *   today    — planned for today or earlier, or a deadline landing today or earlier.
+ *   inbox    — captured, undated. Also reachable as `someday`/`backlog` (aliases).
+ *   chronic  — rolled over more than CHRONIC_ROLLOVER_THRESHOLD times: the queue
+ *              flagging "you keep not doing this — cut it, shrink it, or commit".
+ *   active   — everything the planner may schedule (i.e. all but `waiting`).
  */
+export type TaskFilter =
+    | 'all' | 'active' | 'today' | 'week' | 'overdue' | 'someday' | 'backlog'
+    | 'inbox' | 'planned' | 'rolling' | 'waiting' | 'chronic';
+
 export function getPendingTasks(filter: TaskFilter = 'all'): TaskRow[] {
     const today = todayStr();
     let where = "t.status = 'Pending'";
     const params: any[] = [];
 
-    if (filter === 'today') {
-        where += ' AND t.due_date IS NOT NULL AND t.due_date <= ?';
-        params.push(today);
-    } else if (filter === 'week') {
-        where += ' AND t.due_date IS NOT NULL AND t.due_date <= ?';
-        params.push(dateOffsetStr(7));
-    } else if (filter === 'overdue') {
-        where += ' AND t.due_date IS NOT NULL AND t.due_date < ?';
-        params.push(today);
-    } else if (filter === 'someday') {
-        where += ' AND t.due_date IS NULL';
+    switch (filter) {
+        case 'today':
+            where += ' AND (t.planned_date <= ? OR t.deadline <= ?)';
+            params.push(today, today);
+            break;
+        case 'week': {
+            const horizon = dateOffsetStr(7);
+            where += ' AND (t.planned_date <= ? OR t.deadline <= ?)';
+            params.push(horizon, horizon);
+            break;
+        }
+        case 'overdue':
+            // Hard deadlines only. A rolled-over plan is NOT overdue.
+            where += ' AND t.deadline IS NOT NULL AND t.deadline < ?';
+            params.push(today);
+            break;
+        case 'someday':
+        case 'backlog':
+        case 'inbox':
+            where += ' AND t.planned_date IS NULL AND t.deadline IS NULL';
+            break;
+        case 'planned':
+            where += " AND t.state = 'planned'";
+            break;
+        case 'rolling':
+            where += " AND t.state = 'rolled_over'";
+            break;
+        case 'waiting':
+            where += " AND t.state = 'waiting'";
+            break;
+        case 'chronic':
+            where += ' AND COALESCE(t.rollover_count, 0) >= ?';
+            params.push(CHRONIC_ROLLOVER_THRESHOLD);
+            break;
+        case 'active':
+            where += " AND COALESCE(t.state, 'inbox') <> 'waiting'";
+            break;
+        case 'all':
+        default:
+            break;
     }
 
-    const stmt = db.prepare(
-        `SELECT t.id, t.date, t.title, t.status, t.priority, t.due_date,
-                t.estimate_minutes, t.project_id, t.notes, p.name AS project_name
+    // Ordering: real deadlines first (soonest), then planned dates, then priority.
+    // NULLs sort last in both date groups — an undated task is never more urgent
+    // than a dated one.
+    return db.prepare(
+        `SELECT ${TASK_COLUMNS}, p.name AS project_name, p.target_date AS project_target_date
          FROM tasks t
          LEFT JOIN projects p ON p.id = t.project_id
          WHERE ${where}
-         ORDER BY (t.due_date IS NULL),
-                  t.due_date ASC,
+         ORDER BY (t.deadline IS NULL), t.deadline ASC,
+                  (t.planned_date IS NULL), t.planned_date ASC,
                   CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
                   CAST(SUBSTR(t.id, 2) AS INTEGER)`
-    );
-    return stmt.all(...params) as TaskRow[];
+    ).all(...params) as TaskRow[];
+}
+
+/** One task by resolved id, with its project joined. */
+export function getTask(taskId: string): TaskRow | null {
+    const id = resolveTaskId(taskId);
+    if (!id) return null;
+    return db.prepare(
+        `SELECT ${TASK_COLUMNS}, p.name AS project_name, p.target_date AS project_target_date
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`
+    ).get(id) as TaskRow;
 }
 
 /**
@@ -407,10 +578,11 @@ export function resolveTaskId(taskId: string): string | null {
 /** Patch any subset of a task's editable fields. Returns the resolved id. */
 export function updateTask(
     taskId: string,
-    patch: { title?: string; priority?: string } & TaskFields
+    patchIn: { title?: string; priority?: string; rolloverCount?: number } & TaskFields
 ): string | null {
     const id = resolveTaskId(taskId);
     if (!id) return null;
+    const patch = normalizeFields(patchIn) as typeof patchIn;
 
     const sets: string[] = [];
     const params: any[] = [];
@@ -418,10 +590,41 @@ export function updateTask(
 
     if (patch.title !== undefined) push('title', patch.title);
     if (patch.priority !== undefined) push('priority', patch.priority);
-    if (patch.dueDate !== undefined) push('due_date', patch.dueDate);
-    if (patch.estimateMinutes !== undefined) push('estimate_minutes', patch.estimateMinutes);
+    if (patch.estimatedMinutes !== undefined) push('estimated_minutes', patch.estimatedMinutes);
     if (patch.projectId !== undefined) push('project_id', patch.projectId);
     if (patch.notes !== undefined) push('notes', patch.notes);
+    if (patch.taskKind !== undefined) push('task_kind', patch.taskKind);
+    if (patch.waitingOn !== undefined) push('waiting_on', patch.waitingOn);
+    if (patch.rolloverCount !== undefined) push('rollover_count', patch.rolloverCount);
+
+    const datesTouched = patch.plannedDate !== undefined || patch.deadline !== undefined;
+    if (patch.plannedDate !== undefined) push('planned_date', patch.plannedDate);
+    if (patch.deadline !== undefined) push('deadline', patch.deadline);
+
+    // Explicit state wins; otherwise moving a date re-plans the task, which also
+    // clears the "rolled over" flag — the user just made a fresh commitment, and
+    // carrying the amber flag forward would keep punishing them for it.
+    if (patch.state !== undefined) {
+        push('state', patch.state);
+    } else if (datesTouched) {
+        const cur = db.prepare('SELECT planned_date, deadline, state FROM tasks WHERE id = ?')
+            .get(id) as { planned_date: string | null; deadline: string | null; state: string | null };
+        const nextPlanned = patch.plannedDate !== undefined ? patch.plannedDate : cur.planned_date;
+        const nextDeadline = patch.deadline !== undefined ? patch.deadline : cur.deadline;
+        if (cur.state !== 'waiting') push('state', (nextPlanned || nextDeadline) ? 'planned' : 'inbox');
+    }
+
+    if (datesTouched) {
+        push('last_rescheduled_at', new Date().toISOString());
+        // Keep the legacy mirror in step with whatever the row now holds.
+        sets.push('due_date = COALESCE(?, ?)');
+        const cur = db.prepare('SELECT planned_date, deadline FROM tasks WHERE id = ?')
+            .get(id) as { planned_date: string | null; deadline: string | null };
+        params.push(
+            patch.deadline !== undefined ? patch.deadline : cur.deadline,
+            patch.plannedDate !== undefined ? patch.plannedDate : cur.planned_date
+        );
+    }
 
     if (!sets.length) return id;   // nothing to change, but the task exists
     params.push(id);
@@ -429,36 +632,95 @@ export function updateTask(
     return id;
 }
 
-/** Count of pending tasks whose due date has passed. Cheap enough for briefings. */
+/**
+ * Count of pending tasks that have MISSED A REAL DEADLINE. Deliberately no longer
+ * counts self-assigned plans that slipped — that number was ~everything, so it
+ * stopped carrying information.
+ */
 export function getOverdueCount(): number {
     const row = db.prepare(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'Pending' AND due_date IS NOT NULL AND due_date < ?"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'Pending' AND deadline IS NOT NULL AND deadline < ?"
     ).get(todayStr()) as { n: number };
     return row.n;
 }
 
-/** Pending tasks untouched for `days` and with no deadline — candidates to drop. */
+/** Pending tasks untouched for `days` and with no date at all — candidates to drop. */
 export function getStaleTasks(days: number = 21): TaskRow[] {
+    return db.prepare(
+        `SELECT ${TASK_COLUMNS}, p.name AS project_name, p.target_date AS project_target_date
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.status = 'Pending' AND t.planned_date IS NULL AND t.deadline IS NULL AND t.date <= ?
+         ORDER BY t.date ASC`
+    ).all(dateOffsetStr(-days)) as TaskRow[];
+}
+
+/**
+ * THE ROLLOVER. Every pending task whose planned day has passed moves to today,
+ * gains a rollover, and is marked `rolled_over`.
+ *
+ * This is what turns a calendar-bound list into a queue: nothing is ever "late"
+ * for a date the user chose themselves, it is simply still in line. Hard
+ * deadlines are untouched — `deadline` is never rewritten here, so a genuinely
+ * missed deadline still shows up red tomorrow.
+ *
+ * `waiting` tasks are skipped: they aren't waiting on the user, so rolling them
+ * would inflate rollover_count and mislabel them as chronically avoided.
+ *
+ * Idempotent by construction — after it runs, no pending task has a
+ * planned_date < today, so a second call the same day is a no-op.
+ */
+export function rollOverTasks(today: string = todayStr()): { rolled: number; ids: string[] } {
+    const due = db.prepare(
+        `SELECT id FROM tasks
+         WHERE status = 'Pending' AND planned_date IS NOT NULL AND planned_date < ?
+           AND COALESCE(state, 'inbox') <> 'waiting'`
+    ).all(today) as { id: string }[];
+    if (!due.length) return { rolled: 0, ids: [] };
+
+    const now = new Date().toISOString();
     const stmt = db.prepare(
-        `SELECT id, date, title, status, priority, due_date, estimate_minutes, project_id, notes
-         FROM tasks
-         WHERE status = 'Pending' AND due_date IS NULL AND date <= ?
-         ORDER BY date ASC`
+        `UPDATE tasks
+            SET planned_date = ?,
+                due_date = COALESCE(deadline, ?),
+                state = 'rolled_over',
+                rollover_count = COALESCE(rollover_count, 0) + 1,
+                last_rescheduled_at = ?
+          WHERE id = ?`
     );
-    return stmt.all(dateOffsetStr(-days)) as TaskRow[];
+    db.transaction(() => { for (const r of due) stmt.run(today, today, now, r.id); })();
+    return { rolled: due.length, ids: due.map(r => r.id) };
+}
+
+/**
+ * Run the rollover at most once per day, cheaply.
+ *
+ * Called from every entry point that reads the queue (list / plan_day /
+ * suggest) as well as the 07:00 scheduler tick, so the queue is correct no
+ * matter which one the user hits first — including on a Mac that was asleep and
+ * missed the scheduler entirely. The settings guard keeps the repeated calls
+ * free; correctness doesn't depend on it, only cost does.
+ */
+export function ensureDailyRollover(): { rolled: number; ran: boolean } {
+    const today = todayStr();
+    if (getSetting('last_rollover_date') === today) return { rolled: 0, ran: false };
+    const { rolled } = rollOverTasks(today);
+    setSetting('last_rollover_date', today);
+    return { rolled, ran: true };
 }
 
 export function completeTask(taskId: string): boolean {
     const search = taskId.toLowerCase();
     const now = new Date().toISOString();
 
+    // `state` is kept in step with `status` so the lifecycle view never disagrees
+    // with the coarse Pending/Completed flag every legacy reader still uses.
     // Try exact ID match first
-    let stmt = db.prepare("UPDATE tasks SET status = 'Completed', completed_at = ? WHERE LOWER(id) = ? AND status = 'Pending'");
+    let stmt = db.prepare("UPDATE tasks SET status = 'Completed', state = 'done', completed_at = ? WHERE LOWER(id) = ? AND status = 'Pending'");
     let info = stmt.run(now, search);
     if (info.changes > 0) return true;
 
     // Fallback: partial title match
-    stmt = db.prepare("UPDATE tasks SET status = 'Completed', completed_at = ? WHERE LOWER(title) LIKE ? AND status = 'Pending'");
+    stmt = db.prepare("UPDATE tasks SET status = 'Completed', state = 'done', completed_at = ? WHERE LOWER(title) LIKE ? AND status = 'Pending'");
     info = stmt.run(now, `%${search}%`);
     return info.changes > 0;
 }
