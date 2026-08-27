@@ -54,9 +54,9 @@ Silencing or adding a tool means editing a *different* place depending on which 
 
 ---
 
-## 2. Astra's own tools (plane B) — 10 live
+## 2. Astra's own tools (plane B) — 11 live
 
-Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 domain modules under
+Source: `tools/registry/mega-tools.ts`. Only these 11 are advertised; the ~17 domain modules under
 `tools/` are the *implementation* the mega-tools route into.
 
 | Tool | Actions | Backed by |
@@ -64,6 +64,7 @@ Source: `tools/registry/mega-tools.ts`. Only these 10 are advertised; the ~17 do
 | `manage_tasks` | `add`, `list`, `complete`, `delete`, `update`, `snooze`, `suggest`, `waiting`, `triage`, `rollover`, `stale`, `add_recurring`, `list_recurring`, `remove_recurring` | `tasks.ts`, `recurring-tasks.ts`, `task-queue.ts`, `duration-heuristics.ts` |
 | `manage_finances` | `add_expense`, `expense_summary`, `add_income`, `financial_overview`, `set_budget`, `list_budgets`, `budget_alerts` | `expenses.ts`, `budget.ts` |
 | `manage_calendar` | `list`, `add`, `delete` | `calendar.ts` (Google, service account) |
+| `manage_transit` | `plan_route`, `block_travel_time` | `transit.ts` — Google Maps Directions (transit mode); `block_travel_time` also writes a `colorId` 8 event via `calendar.ts` |
 | `manage_habits` | `track`, `log`, `list` | `habits.ts` |
 | `manage_memory` | `propose`, `approve`, `decline` | `memory.ts` (approval-gated) |
 | `manage_notes` | `add`, `find`, `list`, `link`, `delete` | `notes.ts` (Obsidian vault) |
@@ -209,7 +210,7 @@ still works — voice output goes through Piper, not OpenClaw's TTS.
 
 ---
 
-## 4. Skills (plane C) — 13 live
+## 4. Skills (plane C) — 14 live
 
 Prose in `SKILL.md` telling the model *when* to reach for a tool. Loaded from
 `~/.openclaw/workspace/skills/`.
@@ -219,6 +220,7 @@ Prose in `SKILL.md` telling the model *when* to reach for a tool. Loaded from
 | `task_management` | `manage_tasks`, `plan_day` | deadlines + day planning; Hebrew triggers |
 | `expense_tracking` | `manage_finances` | NIS-aware |
 | `calendar` | `manage_calendar` | |
+| `transit` | `manage_transit` | new 2026-08-27; Hebrew-first replies, bus/train routing |
 | `habits` | `manage_habits` | |
 | `notes` | `manage_notes` | Hebrew triggers included |
 | `memory` | `manage_memory` | has an explicit "when NOT to activate" — good pattern to copy |

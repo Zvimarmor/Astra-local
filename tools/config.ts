@@ -48,6 +48,16 @@ export const config = {
         timeoutMs: parseInt(process.env.GEMINI_TIMEOUT_MS || '60000', 10),
     },
     timezone: process.env.TIMEZONE || 'Asia/Jerusalem',
+
+    // Google Maps Directions API — public-transit / commute planning (tools/transit.ts).
+    // This is a plain API key from Google Cloud, NOT the service account used for
+    // Calendar: Directions is a key-authenticated REST API and does not accept
+    // service-account OAuth. Enable "Directions API" on the project or every call
+    // comes back REQUEST_DENIED. Empty key => the tool answers with a Hebrew
+    // "no key configured" message instead of throwing.
+    googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
+    // Default trip origin when the user doesn't name one ("how do I get to X?").
+    homeAddress: (process.env.HOME_ADDRESS || '').trim(),
     whitelistJids: (process.env.WHITELIST_JIDS || '').split(',').map(j => j.trim()).filter(Boolean),
     dbPath: process.env.DB_PATH || path.join(PROJECT_ROOT, 'data', 'memory.db'),
 

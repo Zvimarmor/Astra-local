@@ -11,6 +11,7 @@ import { voiceTools } from '../voice';
 import { notesTools } from '../notes';
 import { projectTools } from '../projects';
 import { plannerTools } from '../planner';
+import { transitTools } from '../transit';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -72,6 +73,7 @@ const HELP_META: Record<string, HelpEntry> = {
     plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar, to 70% capacity', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm" · "Cancel the dentist"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
+    manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes & commute time-blocking', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "תחסום לי נסיעה ליעד לפני הפגישה"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
@@ -337,6 +339,55 @@ export const megaTools = {
                 case 'log': return call(habitTools as DomainMap, 'log_habit', { name: a.name });
                 case 'list': return call(habitTools as DomainMap, 'list_habits', {});
                 default: return badAction(a.action, ['track', 'log', 'list']);
+            }
+        },
+    },
+
+    // ─── Transit (Google Maps Directions, transit mode) ──────────────
+    // Replies are Hebrew-first: this answers "איך אני מגיע ל...?" on WhatsApp.
+    // Needs GOOGLE_MAPS_API_KEY (a plain API key — the Calendar service account
+    // does NOT authenticate Directions); without it the tool returns a Hebrew
+    // "no key configured" message rather than failing.
+    manage_transit: {
+        name: 'manage_transit',
+        description:
+            "Public transport (bus/train/subway/tram) routing in Israel via Google Maps. Choose action: " +
+            "'plan_route' (needs destination; optional origin — defaults to the user's home address — plus " +
+            "arrival_time OR departure_time, transit_mode, max_routes) — returns departure/arrival times, " +
+            "total duration, line numbers, boarding stops and transfers; or " +
+            "'block_travel_time' (needs destination + arrival_time) — looks the route up and ALSO writes a " +
+            "'🚆 נסיעה אל <יעד>' event into Google Calendar with colorId 8 (Graphite/travel) covering the commute. " +
+            "arrival_time = 'be there by'; departure_time = 'leave at'. Never pass both. " +
+            "Times are ISO datetimes in Israel local time, e.g. 2026-08-28T09:00:00 (Unix seconds also accepted). " +
+            "Use 'block_travel_time' only when the user asks to reserve/block the travel in the calendar; " +
+            "otherwise 'plan_route' and report the answer.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['plan_route', 'block_travel_time'], description: 'Look up a route, or look it up and block it in the calendar' },
+                destination: { type: 'string', description: 'Where the user is going (address or place name)' },
+                origin: { type: 'string', description: "Where the user starts. Omit to use the user's home address." },
+                arrival_time: { type: 'string', description: 'Be there BY this time, ISO e.g. 2026-08-28T09:00:00 (required for block_travel_time)' },
+                departure_time: { type: 'string', description: 'Leave AT this time, ISO. Do not combine with arrival_time. (plan_route only)' },
+                transit_mode: { type: 'string', description: "Restrict vehicles: 'bus', 'train', 'subway', 'tram' — comma-separated. Omit for all." },
+                max_routes: { type: 'number', description: 'How many alternatives to return, 1-5 (default 3). For plan_route.' },
+                buffer_minutes: { type: 'number', description: 'For block_travel_time: arrive this many minutes before arrival_time (default 10).' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            switch (a.action) {
+                case 'plan_route': return call(transitTools as DomainMap, 'plan_transit_route', {
+                    origin: a.origin, destination: a.destination,
+                    arrival_time: a.arrival_time, departure_time: a.departure_time,
+                    transit_mode: a.transit_mode, max_routes: a.max_routes,
+                });
+                case 'block_travel_time': return call(transitTools as DomainMap, 'block_travel_time', {
+                    origin: a.origin, destination: a.destination,
+                    arrival_time: a.arrival_time, transit_mode: a.transit_mode,
+                    buffer_minutes: a.buffer_minutes,
+                });
+                default: return badAction(a.action, ['plan_route', 'block_travel_time']);
             }
         },
     },

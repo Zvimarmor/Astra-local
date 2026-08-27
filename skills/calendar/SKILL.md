@@ -31,6 +31,9 @@ All calendar operations go through ONE tool: **`manage_calendar`**. Always pass 
    - `6` (Tangerine) gym/sports/health · `5` (Banana) birthdays/celebrations/family · `1` (Lavender) parties/leisure
    - `8` (Graphite) travel/commute/errands
    The Einav and army rules win over every other category if more than one could apply.
+8. **Travel/commute events**: do NOT hand-build these. If the user wants travel time blocked before
+   an event, use `manage_transit(action="block_travel_time", ...)` — it looks up the real route and
+   writes the `🚆 נסיעה אל <יעד>` event with `colorId` `8` and the line details. See the transit skill.
 
 ## Examples
 - "What's on my calendar?" → `manage_calendar(action="list", max_results=10)`
