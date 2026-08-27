@@ -58,6 +58,16 @@ Bindings are matched most-specific-first: exact peer → parent peer → peer wi
 guild+roles → guild → team → account → channel → default agent. Hers is an exact peer
 match, so it cannot be shadowed by a broader rule added later.
 
+### Her number is bound in BOTH E.164 forms, on purpose
+
+There are two bindings for one person — `+972547343472` and `972547343472`. WhatsApp
+identifies senders by LID, and the mapping file
+(`credentials/whatsapp/default/lid-mapping-*_reverse.json`) resolves hers to the **bare
+digits**, while `openclaw pairing` and the allowlist use the **`+`-prefixed** form. If the
+inbound matcher normalizes to the form the binding lacks, the peer rule misses — and the
+fall-through target is the **owner's agent**, with the owner's tools. The redundant binding
+costs nothing and removes the question. Bind both forms for any future guest.
+
 ---
 
 ## 3. The two tool surfaces
