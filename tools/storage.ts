@@ -115,6 +115,11 @@ db.exec(`
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS unauthorized_sender_notices (
+        sender_e164 TEXT PRIMARY KEY,
+        last_notified_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
     CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
@@ -1358,4 +1363,68 @@ export function setSetting(key: string, value: string): void {
         'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ' +
         'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP'
     ).run(key, value);
+}
+
+// ─── Unauthorized-sender redirect notices ────────────────────────────────────
+/**
+ * Cooldown ledger for the polite Hebrew "wrong number" auto-reply sent to
+ * people who message Astra's WhatsApp line but are not on the allowlist.
+ *
+ * The point is that a stranger gets the redirect *once*, not once per message
+ * and not once per conversation — hence a hard 7-day floor keyed by E.164.
+ * Keys are normalized to bare digits because the same human arrives as
+ * "+972…", "972…" or a WhatsApp LID-resolved form depending on the code path
+ * (the same dual-form trap the `gf` agent bindings document), and three rows
+ * for one person would mean three notices.
+ */
+export const UNAUTHORIZED_NOTICE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 604_800_000
+
+/** Reduce any E.164-ish form ("+972 53-460-0460", "972534600460") to bare digits. */
+export function normalizeSenderE164(sender: string): string {
+    return (sender || '').replace(/\D/g, '');
+}
+
+/**
+ * True when this sender was already sent the redirect inside the cooldown
+ * window — i.e. the caller should drop the message silently.
+ */
+export function isSenderOnNoticeCooldown(
+    sender: string,
+    now: number = Date.now(),
+): boolean {
+    const key = normalizeSenderE164(sender);
+    if (!key) return false;
+    const row = db
+        .prepare('SELECT last_notified_at FROM unauthorized_sender_notices WHERE sender_e164 = ?')
+        .get(key) as { last_notified_at: number } | undefined;
+    if (!row) return false;
+    return now - row.last_notified_at < UNAUTHORIZED_NOTICE_COOLDOWN_MS;
+}
+
+/** Record that the redirect was just sent to this sender. */
+export function recordSenderNotice(sender: string, now: number = Date.now()): void {
+    const key = normalizeSenderE164(sender);
+    if (!key) return;
+    db.prepare(
+        'INSERT INTO unauthorized_sender_notices (sender_e164, last_notified_at) VALUES (?, ?) ' +
+        'ON CONFLICT(sender_e164) DO UPDATE SET last_notified_at = excluded.last_notified_at',
+    ).run(key, now);
+}
+
+/**
+ * Atomic check-and-set: returns true if the caller should send the notice now
+ * (and marks it sent). Prefer this over calling the two helpers separately —
+ * inbound WhatsApp messages arrive concurrently, and a check/send/record gap
+ * is exactly how a stranger who fires off three messages at once gets three
+ * copies of the redirect.
+ */
+export function claimSenderNotice(sender: string, now: number = Date.now()): boolean {
+    const key = normalizeSenderE164(sender);
+    if (!key) return false;
+    const claim = db.transaction((): boolean => {
+        if (isSenderOnNoticeCooldown(key, now)) return false;
+        recordSenderNotice(key, now);
+        return true;
+    });
+    return claim();
 }

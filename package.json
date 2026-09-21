@@ -8,6 +8,8 @@
     "build:services": "npx tsc -p tsconfig.services.json",
     "build:all": "npm run build && npm run build:services",
     "listener": "node dist-services/whatsapp-listener.js",
+    "patch:whatsapp": "node scripts/patch-whatsapp-notice.js",
+    "patch:whatsapp:check": "node scripts/patch-whatsapp-notice.js --check",
     "cc:enrol": "node dist/private/enrol.js",
     "test": "echo \"No tests yet\" && exit 0",
     "cc:code": "node dist/private/code.js"
