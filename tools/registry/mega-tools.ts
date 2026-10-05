@@ -12,6 +12,7 @@ import { notesTools } from '../notes';
 import { projectTools } from '../projects';
 import { plannerTools } from '../planner';
 import { transitTools } from '../transit';
+import { tripCostTools } from '../trip-cost';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -73,7 +74,7 @@ const HELP_META: Record<string, HelpEntry> = {
     plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar, to 70% capacity', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm" · "Cancel the dentist"' },
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
-    manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes & commute time-blocking', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "תחסום לי נסיעה ליעד לפני הפגישה"' },
+    manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes, commute time-blocking & car fuel cost', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "כמה יעלה לי דלק לנסוע לחיפה הלוך-חזור?"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
@@ -351,7 +352,7 @@ export const megaTools = {
     manage_transit: {
         name: 'manage_transit',
         description:
-            "Public transport (bus/train/subway/tram) routing in Israel via Google Maps. Choose action: " +
+            "Public transport (bus/train/subway/tram) routing and car-trip fuel cost in Israel via Google Maps. Choose action: " +
             "'plan_route' (needs destination; optional origin — defaults to the user's home address — plus " +
             "arrival_time OR departure_time, transit_mode, max_routes) — returns departure/arrival times, " +
             "total duration, line numbers, boarding stops and transfers; or " +
@@ -360,11 +361,15 @@ export const megaTools = {
             "arrival_time = 'be there by'; departure_time = 'leave at'. Never pass both. " +
             "Times are ISO datetimes in Israel local time, e.g. 2026-08-28T09:00:00 (Unix seconds also accepted). " +
             "Use 'block_travel_time' only when the user asks to reserve/block the travel in the calendar; " +
-            "otherwise 'plan_route' and report the answer.",
+            "otherwise 'plan_route' and report the answer. " +
+            "'calculate_trip_cost' (needs destination; optional origin, round_trip, fuel_type '95'|'diesel', " +
+            "traffic_level 'heavy'|'normal' (omit = live traffic), car_consumption_km_per_l (default 13), " +
+            "ac_level 0|1|2|'auto' (default auto = by season), price_per_liter) — estimates the FUEL COST of " +
+            "driving there by car: distance, litres and ILS, plus an `assumptions` list to show the user.",
         parameters: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['plan_route', 'block_travel_time'], description: 'Look up a route, or look it up and block it in the calendar' },
+                action: { type: 'string', enum: ['plan_route', 'block_travel_time', 'calculate_trip_cost'], description: 'Look up a transit route, block it in the calendar, or estimate a car trip\'s fuel cost' },
                 destination: { type: 'string', description: 'Where the user is going (address or place name)' },
                 origin: { type: 'string', description: "Where the user starts. Omit to use the user's home address." },
                 arrival_time: { type: 'string', description: 'Be there BY this time, ISO e.g. 2026-08-28T09:00:00 (required for block_travel_time)' },
@@ -372,6 +377,12 @@ export const megaTools = {
                 transit_mode: { type: 'string', description: "Restrict vehicles: 'bus', 'train', 'subway', 'tram' — comma-separated. Omit for all." },
                 max_routes: { type: 'number', description: 'How many alternatives to return, 1-5 (default 3). For plan_route.' },
                 buffer_minutes: { type: 'number', description: 'For block_travel_time: arrive this many minutes before arrival_time (default 10).' },
+                round_trip: { type: 'boolean', description: 'For calculate_trip_cost: include the way back (default false).' },
+                fuel_type: { type: 'string', enum: ['95', 'diesel'], description: "For calculate_trip_cost: fuel (default '95')." },
+                traffic_level: { type: 'string', enum: ['heavy', 'normal'], description: "For calculate_trip_cost: omit to use Google's live traffic." },
+                car_consumption_km_per_l: { type: 'number', description: 'For calculate_trip_cost: car economy in km/litre (default 13).' },
+                ac_level: { type: 'string', enum: ['0', '1', '2', 'auto'], description: "For calculate_trip_cost: air-conditioning level (default 'auto' = by season)." },
+                price_per_liter: { type: 'number', description: 'For calculate_trip_cost: only if the user states a fuel price (ILS/litre).' },
             },
             required: ['action'],
         },
@@ -387,7 +398,13 @@ export const megaTools = {
                     arrival_time: a.arrival_time, transit_mode: a.transit_mode,
                     buffer_minutes: a.buffer_minutes,
                 });
-                default: return badAction(a.action, ['plan_route', 'block_travel_time']);
+                case 'calculate_trip_cost': return call(tripCostTools as DomainMap, 'calculate_trip_cost', {
+                    origin: a.origin, destination: a.destination, round_trip: a.round_trip,
+                    fuel_type: a.fuel_type, traffic_level: a.traffic_level,
+                    car_consumption_km_per_l: a.car_consumption_km_per_l, ac_level: a.ac_level,
+                    price_per_liter: a.price_per_liter,
+                });
+                default: return badAction(a.action, ['plan_route', 'block_travel_time', 'calculate_trip_cost']);
             }
         },
     },

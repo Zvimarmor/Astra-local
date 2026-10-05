@@ -9,6 +9,8 @@
   - route → "איך אני מגיע ל", "איך מגיעים ל", "איזה קו לקחת ל", "איזה אוטובוס", "איזו רכבת"
   - timing → "מתי לצאת", "באיזו שעה לצאת", "כמה זמן לוקח להגיע ל", "אני צריך להיות ב… ב…"
   - calendar → "תחסום לי נסיעה", "תוסיף ליומן את הנסיעה", "תשריין זמן נסיעה", "תחסום זמן דרך"
+- Fuel cost of a **car** trip ("כמה יעלה לי דלק ל…") is NOT this skill's routing flow — see the
+  trip-cost skill (`manage_transit(action="calculate_trip_cost")`).
 
 ## Tools Available
 

@@ -58,6 +58,15 @@ export const config = {
     googleMapsApiKey: (process.env.GOOGLE_MAPS_API_KEY || '').trim(),
     // Default trip origin when the user doesn't name one ("how do I get to X?").
     homeAddress: (process.env.HOME_ADDRESS || '').trim(),
+
+    // Driving fuel-cost estimates (tools/trip-cost.ts). The live price is scraped from
+    // the local SearXNG (the same instance OpenClaw's web_search uses); these are only
+    // the fallbacks when that lookup fails. ILS per litre, VAT included.
+    searxngUrl: (process.env.SEARXNG_URL || 'http://127.0.0.1:8888').trim(),
+    fuelPriceDefaults: {
+        '95': parseFloat(process.env.FUEL_PRICE_95_DEFAULT || '7.77'),
+        diesel: parseFloat(process.env.FUEL_PRICE_DIESEL_DEFAULT || '12.49'),
+    },
     whitelistJids: (process.env.WHITELIST_JIDS || '').split(',').map(j => j.trim()).filter(Boolean),
     dbPath: process.env.DB_PATH || path.join(PROJECT_ROOT, 'data', 'memory.db'),
 

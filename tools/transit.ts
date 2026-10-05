@@ -78,14 +78,14 @@ const STATUS_HE: Record<string, string> = {
     UNKNOWN_ERROR: 'שגיאה זמנית בשרת של Google Maps. נסה שוב.',
 };
 
-const MISSING_KEY_HE =
+export const MISSING_KEY_HE =
     'לא מוגדר מפתח Google Maps. הוסף GOOGLE_MAPS_API_KEY לקובץ .env (והפעל את Directions API בפרויקט ב-Google Cloud) כדי שאוכל לתכנן נסיעות בתחבורה ציבורית.';
 
-const NO_ORIGIN_HE =
+export const NO_ORIGIN_HE =
     'לא ידוע לי מאיפה אתה יוצא. ציין כתובת מוצא, או הגדר HOME_ADDRESS בקובץ .env כדי שאשתמש בה כברירת מחדל.';
 
 /** Uniform Hebrew error result. `hint` stays in English — it's for the logs/dev, not the chat. */
-function err(message: string, hint?: string): Record<string, any> {
+export function err(message: string, hint?: string): Record<string, any> {
     return hint ? { status: 'error', error: message, hint } : { status: 'error', error: message };
 }
 
@@ -160,13 +160,13 @@ function toLocalHhMm(epochSeconds: number): string {
 // ─── Directions API ──────────────────────────────────────────────────────────
 
 /** Resolve the origin: explicit arg → configured home address → null. */
-function resolveOrigin(origin?: string): string | null {
+export function resolveOrigin(origin?: string): string | null {
     const explicit = String(origin || '').trim();
     if (explicit) return explicit;
     return config.homeAddress || null;
 }
 
-async function fetchDirections(params: Record<string, string>): Promise<{ ok: true; data: any } | { ok: false; result: Record<string, any> }> {
+export async function fetchDirections(params: Record<string, string>): Promise<{ ok: true; data: any } | { ok: false; result: Record<string, any> }> {
     const url = new URL(DIRECTIONS_URL);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     url.searchParams.set('key', config.googleMapsApiKey);
