@@ -2,6 +2,7 @@ import { getCalendarClient } from './google-auth';
 import { config } from './config';
 import { getPendingTasks, updateTask, todayStr, ensureDailyRollover, type TaskRow } from './storage';
 import { rankTasks, usableCapacity, CAPACITY_FACTOR, type SizedTask } from './task-queue';
+import { reconcileGoogleTasks } from './google-tasks';
 
 /**
  * Day planner — fit the rolling queue into the gaps between calendar events,
@@ -208,6 +209,8 @@ export const plannerTools = {
                     return { status: 'error', error: `day_end (${hhmm(dayEnd)}) must be at least ${MIN_USEFUL_SLOT_MIN} min after day_start (${hhmm(dayStart)}).` };
                 }
 
+                // Pull completions from Google Tasks first — never plan a task already done.
+                await reconcileGoogleTasks();
                 // Planning today is also the moment to bring yesterday's leftovers
                 // forward — otherwise the plan would be built against a stale queue.
                 if (date === todayStr()) ensureDailyRollover();

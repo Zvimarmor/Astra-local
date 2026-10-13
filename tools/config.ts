@@ -35,6 +35,18 @@ export const config = {
     ownerPhoneNumber: (process.env.OWNER_PHONE_NUMBER || '').replace(/\D/g, ''),
     calendarId: (process.env.CALENDAR_ID || 'primary').trim(),
     serviceAccountPath: process.env.SERVICE_ACCOUNT_PATH || path.join(PROJECT_ROOT, 'data', 'service_account.json'),
+
+    // Google Tasks mirror (tools/google-tasks.ts). NOT the service account above: a
+    // service account has its own private Tasks store that the user can never see,
+    // and Tasks has no "share with" the way Calendar does — so this needs real user
+    // OAuth. `oauthClientPath` is the "Desktop app" OAuth client JSON from Cloud
+    // Console; `tokenPath` is written by `npm run auth:google-tasks`. No token file
+    // => the mirror is silently off and every task tool behaves exactly as before.
+    googleTasks: {
+        oauthClientPath: process.env.GOOGLE_OAUTH_CLIENT_PATH || path.join(PROJECT_ROOT, 'data', 'google_oauth_client.json'),
+        tokenPath: process.env.GOOGLE_TASKS_TOKEN_PATH || path.join(PROJECT_ROOT, 'data', 'google_tasks_token.json'),
+        listName: (process.env.GOOGLE_TASKS_LIST_NAME || 'Astra Tasks').trim(),
+    },
     // Gemini API — replaced the local Ollama endpoint (2026-08-06) to free the
     // ~7.6GB of RAM qwen3:8b was pinning on this 16GB Mac Mini.
     //

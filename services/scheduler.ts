@@ -44,6 +44,9 @@ const { spotifyTools } = require(path.join(DIST, 'spotify.js'));
 const { sendWhatsAppText } = require(path.join(DIST, 'whatsapp-send.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getCalendarClient } = require(path.join(DIST, 'google-auth.js'));
+// Google Tasks mirror: the briefing pulls phone-side completions before reading the queue.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { reconcileGoogleTasks } = require(path.join(DIST, 'google-tasks.js'));
 // Channel watchdog: probe WhatsApp (primary) health, alert out of band if down.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { checkWhatsAppHealth } = require(path.join(DIST, 'channel-health.js'));
@@ -237,6 +240,12 @@ function projectDeadlineLines(days: number = 7): string[] {
  * for on-demand use, but nothing schedules it by default.
  */
 async function buildMorningBriefing(dateStr: string): Promise<string> {
+    // Tasks ticked off in Google Tasks count as done before anything is listed
+    // (force: this runs once a day, the throttle is for the chat tools). It also
+    // pushes the 07:00 recurring tasks. Best-effort — it never throws, and with
+    // no OAuth token it is a no-op.
+    const gt = await reconcileGoogleTasks(true);
+    if (gt.completed.length) console.log(`[Scheduler] Google Tasks completed: ${gt.completed.join(', ')}`);
     // Roll first, then read — otherwise the 08:00 briefing would describe
     // yesterday's queue on any morning the 07:00 tick was missed.
     storage.ensureDailyRollover();

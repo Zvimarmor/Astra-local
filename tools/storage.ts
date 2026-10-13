@@ -223,6 +223,13 @@ db.exec(`
     addCol('waiting_on', 'TEXT');
     addCol('rollover_count', 'INTEGER NOT NULL DEFAULT 0');
     addCol('last_rescheduled_at', 'TEXT');
+    // Google Tasks mirror (tools/google-tasks.ts). `google_task_id` links the row to
+    // its copy in the "Astra Tasks" list; GOOGLE_TASK_UNLINKED marks one the user
+    // deleted on the Google side, so it is never re-created there.
+    // `google_synced_at` is when we last pushed it — a later `last_rescheduled_at`
+    // (a rollover, typically) is what marks the mirror stale.
+    addCol('google_task_id', 'TEXT');
+    addCol('google_synced_at', 'TEXT');
 
     // Backfill, idempotent — each UPDATE only touches rows not yet migrated.
     db.exec(`
@@ -437,6 +444,8 @@ export interface TaskRow {
     project_target_date?: string | null;
     /** Legacy mirror of COALESCE(deadline, planned_date). Do not branch on it. */
     due_date: string | null;
+    google_task_id: string | null;
+    google_synced_at: string | null;
 }
 
 /** The columns every task read projects. One place to edit. */
@@ -444,7 +453,8 @@ const TASK_COLUMNS = `
     t.id, t.date, t.title, t.status, t.priority,
     t.planned_date, t.deadline, t.state, t.task_kind, t.waiting_on,
     COALESCE(t.rollover_count, 0) AS rollover_count, t.last_rescheduled_at,
-    t.estimated_minutes, t.project_id, t.notes, t.due_date`;
+    t.estimated_minutes, t.project_id, t.notes, t.due_date,
+    t.google_task_id, t.google_synced_at`;
 
 /** Resolve `dueDate` (legacy) onto `plannedDate` without clobbering an explicit one. */
 function normalizeFields(fields: TaskFields): TaskFields {
@@ -742,6 +752,44 @@ export function deleteTask(taskId: string): boolean {
     stmt = db.prepare("DELETE FROM tasks WHERE LOWER(title) LIKE ?");
     info = stmt.run(`%${search}%`);
     return info.changes > 0;
+}
+
+// ─── Google Tasks mirror bookkeeping (see tools/google-tasks.ts) ──────────────
+
+/** Sentinel `google_task_id`: deleted in Google by the user — don't mirror it again. */
+export const GOOGLE_TASK_UNLINKED = '-';
+
+/** A task row by EXACT id, any status. The sync layer already holds real ids. */
+export function getTaskById(id: string): TaskRow | null {
+    return (db.prepare(
+        `SELECT ${TASK_COLUMNS}, p.name AS project_name, p.target_date AS project_target_date
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.id = ?`
+    ).get(id) as TaskRow | undefined) ?? null;
+}
+
+export function setGoogleTaskLink(id: string, googleTaskId: string | null): void {
+    db.prepare('UPDATE tasks SET google_task_id = ?, google_synced_at = ? WHERE id = ?')
+        .run(googleTaskId, googleTaskId ? new Date().toISOString() : null, id);
+}
+
+/** Pending tasks with no Google copy yet, or rescheduled (e.g. rolled over) since the last push. */
+export function getTasksNeedingGooglePush(limit: number = 25): TaskRow[] {
+    return db.prepare(
+        `SELECT ${TASK_COLUMNS}, p.name AS project_name, p.target_date AS project_target_date
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.status = 'Pending'
+           AND (t.google_task_id IS NULL
+                OR (t.google_task_id <> ? AND t.last_rescheduled_at IS NOT NULL
+                    AND (t.google_synced_at IS NULL OR t.last_rescheduled_at > t.google_synced_at)))
+         ORDER BY CAST(SUBSTR(t.id, 2) AS INTEGER)
+         LIMIT ?`
+    ).all(GOOGLE_TASK_UNLINKED, limit) as TaskRow[];
+}
+
+/** The still-pending Astra task mirrored by this Google task, if any. */
+export function getPendingTaskByGoogleId(googleTaskId: string): { id: string } | null {
+    return (db.prepare("SELECT id FROM tasks WHERE google_task_id = ? AND status = 'Pending'")
+        .get(googleTaskId) as { id: string } | undefined) ?? null;
 }
 
 // ═══════════════════════════════════════════════════════════════════

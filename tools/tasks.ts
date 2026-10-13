@@ -6,6 +6,21 @@ import {
 } from './storage';
 import { inferDuration, KIND_LABEL, normalizeMinutes } from './duration-heuristics';
 import { fillSlot, rankTasks, sizeOf } from './task-queue';
+import { syncTaskToGoogle, deleteGoogleTask, reconcileGoogleTasks } from './google-tasks';
+
+/**
+ * `google_tasks` field for a tool result — omitted entirely when the mirror is off,
+ * so the model never mentions Google Tasks to a user who hasn't set it up.
+ */
+function gt(status: string): { google_tasks?: string } {
+    return status === 'off' ? {} : { google_tasks: status };
+}
+
+/** Pull Google completions before reading the queue; names what it closed. */
+async function pullCompletions(): Promise<{ completed_in_google_tasks?: string[] }> {
+    const r = await reconcileGoogleTasks();
+    return r.completed.length ? { completed_in_google_tasks: r.completed } : {};
+}
 
 /**
  * Task Management Tools — the rolling queue.
@@ -185,6 +200,7 @@ export const taskTools = {
                     estimate_source: explicit ? 'explicit' : guess.source,
                     task_kind: kind ?? undefined,
                     message,
+                    ...gt(await syncTaskToGoogle(result.id)),
                 };
             } catch (err: any) {
                 console.error("[Tasks] Error adding task:", err.message);
@@ -211,6 +227,9 @@ export const taskTools = {
         },
         execute: async (args: any = {}) => {
             try {
+                // Completions from the phone first, so a task ticked off in Google
+                // Tasks doesn't reappear in the list it was just finished from.
+                const pulled = await pullCompletions();
                 ensureDailyRollover();
                 const filter = (args.filter || 'all') as TaskFilter;
                 const tasks = getPendingTasks(filter);
@@ -226,7 +245,7 @@ export const taskTools = {
                         waiting: 'Not waiting on anyone.',
                         all: 'No pending tasks.',
                     };
-                    return { status: "success", count: 0, message: empty[filter] || empty.all };
+                    return { status: "success", count: 0, message: empty[filter] || empty.all, ...pulled };
                 }
 
                 const grouped = filter === 'all' || filter === 'active' || filter === 'today' || filter === 'week';
@@ -235,6 +254,7 @@ export const taskTools = {
                     count: tasks.length,
                     filter,
                     message: grouped ? fmtGrouped(tasks) : tasks.map(fmtTask).join('\n'),
+                    ...pulled,
                 };
             } catch (err: any) {
                 console.error("[Tasks] Error listing tasks:", err.message);
@@ -261,12 +281,13 @@ export const taskTools = {
                 const before = getTask(args.taskId);
                 const success = completeTask(args.taskId);
                 if (!success) return { status: "error", error: "Task not found or already completed." };
+                const sync = before ? await syncTaskToGoogle(before.id) : 'off';
 
                 let message = "Task marked as completed.";
                 if (before && (before.rollover_count || 0) >= CHRONIC_ROLLOVER_THRESHOLD) {
                     message += ` (finally — it had rolled over ${before.rollover_count} times.)`;
                 }
-                return { status: "success", message };
+                return { status: "success", message, ...gt(sync) };
             } catch (err: any) {
                 console.error("[Tasks] Error completing task:", err.message);
                 return { status: "error", error: err.message };
@@ -286,9 +307,12 @@ export const taskTools = {
         },
         execute: async (args: any) => {
             try {
+                // Capture the Google link before the row (and with it the link) is gone.
+                const before = getTask(args.taskId);
                 const success = deleteTask(args.taskId);
                 if (success) {
-                    return { status: "success", message: "Task deleted." };
+                    const sync = before ? await deleteGoogleTask(before.google_task_id) : 'off';
+                    return { status: "success", message: "Task deleted.", ...gt(sync) };
                 } else {
                     return { status: "error", error: "Task not found." };
                 }
@@ -348,7 +372,7 @@ export const taskTools = {
 
                 const id = updateTask(args.taskId, patch);
                 if (!id) return { status: "error", error: "Task not found." };
-                return { status: "success", taskId: id, message: `Task ${id} updated.` };
+                return { status: "success", taskId: id, message: `Task ${id} updated.`, ...gt(await syncTaskToGoogle(id)) };
             } catch (err: any) {
                 console.error("[Tasks] Error updating task:", err.message);
                 return { status: "error", error: err.message };
@@ -389,7 +413,7 @@ export const taskTools = {
                 if (before && (before.rollover_count || 0) >= CHRONIC_ROLLOVER_THRESHOLD) {
                     message += ` This one has rolled over ${before.rollover_count} times — worth shrinking or dropping it.`;
                 }
-                return { status: "success", taskId: id, message };
+                return { status: "success", taskId: id, message, ...gt(await syncTaskToGoogle(id)) };
             } catch (err: any) {
                 console.error("[Tasks] Error snoozing task:", err.message);
                 return { status: "error", error: err.message };
@@ -451,6 +475,7 @@ export const taskTools = {
                 if (!Number.isFinite(available) || available < 5) {
                     return { status: "error", error: "Tell me how many minutes are free (at least 5)." };
                 }
+                await reconcileGoogleTasks();   // ranking a task already ticked off on the phone is noise
                 ensureDailyRollover();
 
                 let projectId: number | null = null;

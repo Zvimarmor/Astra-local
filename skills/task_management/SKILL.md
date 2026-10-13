@@ -112,6 +112,16 @@ So: never tell the user a task is "late" or "overdue" just because its planned d
 After 3 rollovers a task is flagged **chronic**. That is a signal to raise with the user — the task
 is probably too big, too vague, or not actually wanted — not something to silently keep rolling.
 
+### Google Tasks mirror
+The queue is mirrored to a Google Tasks list called **"Astra Tasks"** (the user's phone), when
+it is set up. You don't call anything for this — `add`/`update`/`snooze`/`complete`/`delete`
+push automatically, and `list`/`suggest`/`plan_day` first pull tasks the user ticked off there.
+- When a result carries `completed_in_google_tasks: ["T12", …]`, say so briefly
+  ("סימנת ב-Google Tasks ש-… בוצע ✓") — those tasks just left the queue.
+- `google_tasks: "error"` means only the mirror failed; the task itself was saved. Don't retry
+  and don't alarm the user — mention it once at most.
+- No `google_tasks` field = the mirror isn't set up. Never bring Google Tasks up on your own then.
+
 ### Recurring Tasks
 - `manage_tasks(action="add_recurring", title, frequency, priority?, day_of_week?, day_of_month?)` — Create a recurring template.
   - frequency: "daily", "weekly", or "monthly"

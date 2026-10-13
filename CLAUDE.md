@@ -112,6 +112,19 @@ These are **standalone long-running processes, independent of OpenClaw and the a
 - **Unauthorized WhatsApp DMs never reach this repo (2026-09-21).** OpenClaw's WhatsApp plugin drops them inside `checkInboundAccessControl()` — its caller does `if (!access.allowed) return null` *before* dispatch — so no MCP tool, no `message:received` hook (it needs a `sessionKey`) and no agent ever sees a message from an unapproved number. Don't go looking for a place in `tools/` to answer them; there isn't one, and no config key customizes the pairing text. The polite Hebrew redirect is therefore a **patch to the installed plugin**, applied by `npm run patch:whatsapp` and living outside the repo under `~/.openclaw/npm/projects/openclaw-whatsapp-*/…/dist/access-control-*.js` — **re-run it after every `openclaw plugins update`, then restart the gateway** (`npm run patch:whatsapp:check` reports status). The patched code `require()`s `dist/unauthorized-notice.js`, which deliberately imports neither `config.ts` (dotenv would inject our `.env`, `PORT` included, into the gateway process) nor `storage.ts`; it fails closed and is rate-limited to one notice per sender per 7 days via the `unauthorized_sender_notices` table. The number it quotes is **`OWNER_PRIMARY_NUMBER` in `.env`**, not a literal — this repo is public, so don't hardcode it back; the module parses that one key out of the file itself rather than calling dotenv, and sends nothing at all if it's unset. Editing the text only needs `npm run build`, not a re-patch. Full write-up in `docs/WHATSAPP-UNAUTHORIZED-NOTICE.md`.
 - **Never `brew services start spotifyd`** — it regenerates the plist and drops `--config-path` (device then registers under the wrong name and every playback call fails) and `ProcessType Interactive` (the audio-stutter fix). Use `launchctl bootstrap` with `~/Library/LaunchAgents/homebrew.mxcl.spotifyd.plist`. See `docs/TOOL-INVENTORY.md` §9.
 
+**Google Tasks needs user OAuth, not the service account (2026-10-13).** `tools/google-tasks.ts`
+mirrors the queue to an "Astra Tasks" list. Calendar works off `data/service_account.json` only
+because the calendar is *shared* with that account; Tasks has no sharing, so a service account
+would write to its own invisible store. The mirror instead runs on a refresh token
+(`data/google_tasks_token.json`, written once by `npm run auth:google-tasks` from a "Desktop app"
+OAuth client in `data/google_oauth_client.json`; both gitignored). No token = silently off. SQLite
+stays the source of truth: content flows Astra→Google on every `manage_tasks` write and on
+reconcile (new rows, rollovers); only **completion** flows back, pulled by `list`/`suggest`/
+`plan_day` (throttled to once per 2 min) and forced by the morning briefing. A task deleted in
+Google is unlinked (`google_task_id = '-'`), never re-created. Every sync path is best-effort and
+never fails the task action. The MCP server caches "no token" — restart the gateway after auth.
+If the consent screen is left in "Testing" mode the refresh token dies after 7 days.
+
 **Transit uses a different Google credential than Calendar (2026-08-27).** `tools/transit.ts` calls
 the Maps **Directions API**, which is key-authenticated (`GOOGLE_MAPS_API_KEY`) and does *not*
 accept the service-account OAuth that `tools/calendar.ts` uses — so having Calendar working tells
