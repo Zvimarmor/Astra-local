@@ -112,15 +112,24 @@ So: never tell the user a task is "late" or "overdue" just because its planned d
 After 3 rollovers a task is flagged **chronic**. That is a signal to raise with the user — the task
 is probably too big, too vague, or not actually wanted — not something to silently keep rolling.
 
-### Google Tasks mirror
-The queue is mirrored to a Google Tasks list called **"Astra Tasks"** (the user's phone), when
-it is set up. You don't call anything for this — `add`/`update`/`snooze`/`complete`/`delete`
-push automatically, and `list`/`suggest`/`plan_day` first pull tasks the user ticked off there.
+### Google Tasks — two-way sync (built in)
+`manage_tasks` **is** integrated with the user's Google Tasks: list **"Astra Tasks"**, on their
+phone. It is automatic and bi-directional — there is no sync action to call:
+- **Astra → Google:** `add`/`update`/`snooze`/`complete`/`delete` push the change immediately
+  (title, due date, `[30 min]` estimate in the notes).
+- **Google → Astra:** `list`/`suggest`/`plan_day` (and the morning briefing) first pull tasks the
+  user ticked off in Google Tasks and mark them done here.
+- If the user asks "are you connected to Google Tasks?" / "זה מסונכרן עם Google Tasks?" — yes;
+  call `manage_tasks(action="list")` and confirm from its `google_tasks` field. Never claim you
+  have no Google Tasks integration while `list` returns `google_tasks`.
 - When a result carries `completed_in_google_tasks: ["T12", …]`, say so briefly
   ("סימנת ב-Google Tasks ש-… בוצע ✓") — those tasks just left the queue.
-- `google_tasks: "error"` means only the mirror failed; the task itself was saved. Don't retry
-  and don't alarm the user — mention it once at most.
-- No `google_tasks` field = the mirror isn't set up. Never bring Google Tasks up on your own then.
+- `google_tasks: "error…"` means only the mirror failed; the task itself was saved. Don't retry.
+  Mention it once, briefly. If it says the sign-in expired, tell the user the Google Tasks
+  connection needs re-authorizing (on the Mac: `npm run auth:google-tasks`) — the sync is
+  paused until then, but everything is still saved in Astra.
+- No `google_tasks` field on a `list` result = the mirror isn't set up on this machine (no token);
+  only then say it isn't connected.
 
 ### Recurring Tasks
 - `manage_tasks(action="add_recurring", title, frequency, priority?, day_of_week?, day_of_month?)` — Create a recurring template.

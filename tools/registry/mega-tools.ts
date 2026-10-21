@@ -13,6 +13,21 @@ import { projectTools } from '../projects';
 import { plannerTools } from '../planner';
 import { transitTools } from '../transit';
 import { tripCostTools } from '../trip-cost';
+import { isGoogleTasksEnabled } from '../google-tasks';
+
+/**
+ * Told to the model ONLY when the Google Tasks OAuth token exists, so the claim is
+ * always true: with no token the description doesn't mention Google at all, and
+ * the model can't promise a sync that isn't happening. Evaluated once per MCP
+ * server start — restart the gateway after `npm run auth:google-tasks`.
+ */
+const GOOGLE_TASKS_ON = isGoogleTasksEnabled();
+const GOOGLE_TASKS_NOTE = GOOGLE_TASKS_ON
+    ? "GOOGLE TASKS: this queue IS connected to the user's Google Tasks, list \"Astra Tasks\", two-way and automatic — " +
+      "add/update/snooze/complete/delete push to Google, and list/suggest/plan_day first pull tasks the user " +
+      "ticked off in Google and mark them done here. There is no separate sync action; never tell the user Google " +
+      "Tasks isn't connected. "
+    : '';
 // ─── DISABLED from the chat surface 2026-07-06 to shrink the system prompt
 //     (faster cold-prefill on the local 8B model). The domain tool logic is
 //     fully intact in ../email, ../email-digest, ../immich, ../spotify — only
@@ -69,7 +84,7 @@ function badAction(action: string, valid: string[]): Record<string, any> {
  */
 interface HelpEntry { category: string; blurb: string; example: string; }
 const HELP_META: Record<string, HelpEntry> = {
-    manage_tasks: { category: '📋 Productivity', blurb: 'rolling task queue — nothing gets lost, nothing false-alarms', example: '"Add a task to call the bank by Friday" · "I have 30 free minutes, what should I do?"' },
+    manage_tasks: { category: '📋 Productivity', blurb: 'rolling task queue — nothing gets lost, nothing false-alarms' + (GOOGLE_TASKS_ON ? ' · synced with Google Tasks ("Astra Tasks")' : ''), example: '"Add a task to call the bank by Friday" · "I have 30 free minutes, what should I do?"' },
     manage_projects: { category: '📋 Productivity', blurb: 'projects/missions with progress & target dates', example: '"New mission: Dynamics exam by Aug 20" · "How\'s the exam project going?"' },
     plan_day: { category: '📋 Productivity', blurb: 'time-block your tasks around your calendar, to 70% capacity', example: '"Plan my day" · "Schedule my tasks and put them in my calendar"' },
     manage_calendar: { category: '📋 Productivity', blurb: 'Google Calendar', example: '"What\'s on today?" · "Add dentist tomorrow 3–4pm" · "Cancel the dentist"' },
@@ -131,7 +146,8 @@ export const megaTools = {
             "'add_recurring' (needs title + frequency; weekly needs day_of_week 0-6, monthly needs day_of_month 1-31), " +
             "'list_recurring', 'remove_recurring' (needs recurring_id). " +
             "ALWAYS pass dates as YYYY-MM-DD — resolve words like 'Friday' or 'next week' to a real date yourself. " +
-            "estimated_minutes is inferred from the title when omitted, so don't ask the user for it.",
+            "estimated_minutes is inferred from the title when omitted, so don't ask the user for it. " +
+            GOOGLE_TASKS_NOTE,
         parameters: {
             type: 'object',
             properties: {

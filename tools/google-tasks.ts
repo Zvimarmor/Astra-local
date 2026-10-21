@@ -42,6 +42,9 @@ export type SyncStatus = 'synced' | 'off' | 'error' | 'unlinked';
 
 let client: tasks_v1.Tasks | null | undefined;
 let lastReconcileAt = 0;
+/** Outcome of the last real reconcile — what a throttled call reports, so it can't paper over a failure. */
+let lastReconcileStatus: SyncStatus = 'synced';
+let lastReconcileError: string | undefined;
 
 /** Load the OAuth client + stored token. null = mirror not configured (not an error). */
 function getClient(): tasks_v1.Tasks | null {
@@ -166,6 +169,10 @@ export interface ReconcileResult {
     status: SyncStatus | 'throttled';
     completed: string[];
     pushed: number;
+    /** On a throttled call: the status of the last reconcile that actually ran. */
+    lastStatus?: SyncStatus;
+    /** Short reason when status is 'error' (e.g. 'invalid_grant' = token expired/revoked). */
+    error?: string;
 }
 
 /**
@@ -176,7 +183,7 @@ export async function reconcileGoogleTasks(force = false): Promise<ReconcileResu
     const api = getClient();
     if (!api) return { status: 'off', completed: [], pushed: 0 };
     if (!force && Date.now() - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) {
-        return { status: 'throttled', completed: [], pushed: 0 };
+        return { status: 'throttled', completed: [], pushed: 0, lastStatus: lastReconcileStatus, error: lastReconcileError };
     }
     lastReconcileAt = Date.now();
 
@@ -219,9 +226,13 @@ export async function reconcileGoogleTasks(force = false): Promise<ReconcileResu
             if ((await pushOne(api, listId, t)) === 'synced') pushed++;
         }
         if (completed.length) console.log(`[GoogleTasks] completed from Google: ${completed.join(', ')}`);
+        lastReconcileStatus = 'synced';
+        lastReconcileError = undefined;
         return { status: 'synced', completed, pushed };
     } catch (e: any) {
         console.error('[GoogleTasks] reconcile failed:', e?.message);
-        return { status: 'error', completed, pushed };
+        lastReconcileStatus = 'error';
+        lastReconcileError = String(e?.message || e).slice(0, 120);
+        return { status: 'error', completed, pushed, error: lastReconcileError };
     }
 }

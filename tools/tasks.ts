@@ -16,10 +16,22 @@ function gt(status: string): { google_tasks?: string } {
     return status === 'off' ? {} : { google_tasks: status };
 }
 
-/** Pull Google completions before reading the queue; names what it closed. */
-async function pullCompletions(): Promise<{ completed_in_google_tasks?: string[] }> {
+/**
+ * Pull Google completions before reading the queue. Every list result says whether
+ * the mirror is on ('synced' — 'throttled' just means a pull ran <2 min ago), so
+ * the model answers "are you connected to Google Tasks?" from a fact, not a guess.
+ */
+async function pullCompletions(): Promise<{ google_tasks?: string; completed_in_google_tasks?: string[] }> {
     const r = await reconcileGoogleTasks();
-    return r.completed.length ? { completed_in_google_tasks: r.completed } : {};
+    if (r.status === 'off') return {};
+    const status = r.status === 'throttled' ? (r.lastStatus ?? 'synced') : r.status;
+    return {
+        // 'error' + invalid_grant = the OAuth token expired; the user must re-run the consent.
+        google_tasks: status === 'error' && /invalid_grant/i.test(r.error || '')
+            ? 'error: Google sign-in expired — run npm run auth:google-tasks'
+            : status,
+        ...(r.completed.length ? { completed_in_google_tasks: r.completed } : {}),
+    };
 }
 
 /**
