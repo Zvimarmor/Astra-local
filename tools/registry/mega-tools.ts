@@ -440,7 +440,7 @@ export const megaTools = {
                 count: { type: 'number', description: 'How many recent emails to list (default 10, max 30)' },
                 account: { type: 'string', enum: ['personal', 'university'], description: "Which inbox ('list'/'read' default to 'personal'; 'digest' defaults to all)" },
                 folder: { type: 'string', description: "Mailbox folder (default 'INBOX')" },
-                uid: { type: 'number', description: 'Email UID to read (from a prior digest or list)' },
+                uid: { type: 'string', description: 'Id of the email to read, exactly as given by a prior digest or list' },
             },
             required: ['action'],
         },

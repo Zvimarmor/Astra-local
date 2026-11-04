@@ -90,13 +90,25 @@ export const config = {
             user: process.env.IMAP_USER || '',
             password: process.env.IMAP_PASSWORD || '',
         },
-        university: {
-            host: process.env.IMAP_HOST_UNI || 'imap.gmail.com',
-            port: parseInt(process.env.IMAP_PORT_UNI || '993', 10),
-            user: process.env.IMAP_USER_UNI || '',
-            password: process.env.IMAP_PASSWORD_UNI || '',
-        },
+        // University moved to the Gmail API (gmailAccounts below). To go back to IMAP,
+        // restore this and remove it from gmailAccounts.
+        // university: {
+        //     host: process.env.IMAP_HOST_UNI || 'imap.gmail.com',
+        //     port: parseInt(process.env.IMAP_PORT_UNI || '993', 10),
+        //     user: process.env.IMAP_USER_UNI || '',
+        //     password: process.env.IMAP_PASSWORD_UNI || '',
+        // },
     } as Record<string, { host: string; port: number; user: string; password: string }>,
+
+    // Gmail API accounts. HUJI's Google Workspace blocks App Passwords, so IMAP can't
+    // log in there. Uses the OAuth client in googleTasks.oauthClientPath with its own
+    // gmail.readonly token, written by `npm run auth:gmail:huji`.
+    gmailAccounts: {
+        university: {
+            tokenPath: process.env.GMAIL_HUJI_TOKEN_PATH || path.join(PROJECT_ROOT, 'data', 'gmail_huji_token.json'),
+            domain: (process.env.GMAIL_HUJI_DOMAIN || 'mail.huji.ac.il').trim(),
+        },
+    } as Record<string, { tokenPath: string; domain: string }>,
 
     // Piper TTS (local text-to-speech)
     piperBinaryPath: process.env.PIPER_BINARY_PATH || '/opt/homebrew/bin/piper',

@@ -1,6 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { config } from './config';
+import { isGmailAccount, listGmailMessages, readGmailMessage } from './email-fetcher';
 
 /**
  * Email Tools — Read-Only IMAP Access
@@ -9,15 +10,15 @@ import { config } from './config';
  * Uses ImapFlow (IMAP only) — NO SMTP library is imported.
  * Physically cannot send, reply to, forward, or delete emails.
  *
- * Supports two accounts: "personal" and "university" (both Gmail).
+ * Supports two accounts: "personal" (IMAP) and "university" (Gmail API, because HUJI
+ * blocks App Passwords; see email-fetcher.ts).
  */
 
 async function getImapClient(account: string): Promise<ImapFlow> {
     const acct = config.imapAccounts[account];
     if (!acct || !acct.host || !acct.user || !acct.password) {
         throw new Error(
-            `IMAP account "${account}" is not configured. ` +
-            `Set IMAP_USER${account === 'university' ? '_UNI' : ''} and IMAP_PASSWORD${account === 'university' ? '_UNI' : ''} in .env`
+            `IMAP account "${account}" is not configured. Set IMAP_USER and IMAP_PASSWORD in .env`
         );
     }
 
@@ -62,6 +63,7 @@ export const emailTools = {
             const account = args.account || 'personal';
             const folder = args.folder || 'INBOX';
             const count = Math.min(args.count || 10, 30);
+            if (isGmailAccount(account)) return listGmailMessages(account, count, args.folder);
             let client: ImapFlow | null = null;
 
             try {
@@ -124,8 +126,8 @@ export const emailTools = {
             type: "object",
             properties: {
                 uid: {
-                    type: "number",
-                    description: "The UID of the email to read (from list_recent_emails results)"
+                    type: "string",
+                    description: "The id of the email to read (from list_recent_emails results)"
                 },
                 account: {
                     type: "string",
@@ -138,6 +140,7 @@ export const emailTools = {
         execute: async (args: any) => {
             const account = args.account || 'personal';
             const uid = args.uid;
+            if (isGmailAccount(account)) return readGmailMessage(account, String(uid), 3000);
             let client: ImapFlow | null = null;
 
             try {

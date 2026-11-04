@@ -18,6 +18,7 @@ data/whatsapp_auth/
 # Google Tasks mirror: OAuth client secret + the user refresh token (scripts/google-tasks-auth.js)
 data/google_oauth_client.json
 data/google_tasks_token.json
+data/gmail_huji_token.json
 data/*.log
 *.pem
 auth_info_baileys/

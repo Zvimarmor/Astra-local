@@ -4,7 +4,8 @@ import { b, compose } from './report-format';
  * Email triage — decides which new unread mail is worth interrupting the owner for.
  *
  * Runs on a timer inside the scheduler process (see startEmailTriage there). Each pass:
- *   1. fetch unread mail from the last 24h, across every configured account;
+ *   1. fetch unread mail from the last 24h, across every configured account (IMAP or
+ *      Gmail API; tools/email-fetcher.ts picks per account, and triage can't tell which);
  *   2. drop what is already in the `email_triage` table;
  *   3. classify the rest with a strict, tool-less LLM prompt, in batches;
  *   4. NO → store metadata only, silently. YES → store + queue an alert;

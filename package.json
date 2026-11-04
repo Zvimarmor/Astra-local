@@ -13,6 +13,8 @@
     "auth:google-tasks": "node scripts/google-tasks-auth.js",
     "auth:google-tasks:check": "node scripts/google-tasks-auth.js --check",
     "cc:enrol": "node dist/private/enrol.js",
+    "auth:gmail:huji": "node scripts/gmail-huji-auth.js",
+    "auth:gmail:huji:check": "node scripts/gmail-huji-auth.js --check",
     "test": "echo \"No tests yet\" && exit 0",
     "test:email-triage": "node scripts/test-email-triage.js",
     "cc:code": "node dist/private/code.js"

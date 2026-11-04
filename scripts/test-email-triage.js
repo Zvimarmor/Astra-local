@@ -16,13 +16,14 @@ const path = require('path');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'astra-triage-'));
 process.env.DB_PATH = path.join(tmp, 'test.db');
+process.env.GMAIL_HUJI_TOKEN_PATH = path.join(tmp, 'no-such-token.json');
 const log = console.log;
 console.log = () => {};   // config.js and storage.js are chatty on load
 const root = path.join(__dirname, '..');
 const storage = require(path.join(root, 'dist', 'storage.js'));
 const { config } = require(path.join(root, 'dist', 'config.js'));
 const { generateText } = require(path.join(root, 'dist', 'gemini.js'));
-const { formatDigest, summarizeEmails } = require(path.join(root, 'dist', 'email-fetcher.js'));
+const { formatDigest, summarizeEmails, fetchGmailAccount, fetchUnreadEmails, listGmailMessages, readGmailMessage } = require(path.join(root, 'dist', 'email-fetcher.js'));
 const triage = require(path.join(root, 'dist-services', 'email-triage.js'));
 const Database = require(path.join(root, 'node_modules', 'better-sqlite3'));
 console.log = log;
@@ -236,6 +237,88 @@ async function main() {
         assert.ok(lines.includes('• [University] office@uni.example - Subject U'), 'subject stands in for a missing summary');
         assert.ok(text.includes('מתוך 40'));
         assert.ok(text.includes('auth failed'));
+    });
+
+    log('\nGmail API path (fake API, sample payloads)');
+    const b64 = text => Buffer.from(text, 'utf8').toString('base64url');
+    const headers = (id, subject) => [
+        { name: 'From', value: 'מזכירות <office@mail.huji.ac.il>' },
+        { name: 'To', value: 'me@mail.huji.ac.il' },
+        { name: 'Subject', value: subject },
+        { name: 'message-ID', value: `<${id}@huji>` },
+    ];
+    const MESSAGES = {
+        // Mixed with an attachment: plain text wins, the attachment is not body text.
+        a1: { id: 'a1', internalDate: String(NOW.getTime()), payload: { mimeType: 'multipart/mixed', headers: headers('a1', 'בחינה'), parts: [
+            { mimeType: 'multipart/alternative', parts: [
+                { mimeType: 'text/plain', body: { data: b64('הבחינה מחר בתשע') } },
+                { mimeType: 'text/html', body: { data: b64('<p>HTML COPY</p>') } },
+            ] },
+            { mimeType: 'application/pdf', filename: 'room.pdf', body: { attachmentId: 'x', size: 2048 } },
+        ] } },
+        // HTML only, on the message root rather than in a part.
+        a2: { id: 'a2', internalDate: String(NOW.getTime()), payload: { mimeType: 'text/html', headers: headers('a2', 'html'), body: { data: b64('<html><style>.x{}</style><body><p>שלום <b>עולם</b></p></body></html>') } } },
+    };
+    const fakeGmail = (log = {}) => ({ users: {
+        labels: { get: async () => ({ data: { messagesUnread: 7, messagesTotal: 90 } }) },
+        messages: {
+            list: async params => { log.list = params; return { data: { messages: ['a1', 'gone', 'a2'].map(id => ({ id })) } }; },
+            get: async ({ id, format }) => {
+                log.format = format;
+                if (!MESSAGES[id]) throw Object.assign(new Error('Not Found'), { code: 404 });
+                return { data: MESSAGES[id] };
+            },
+        },
+    } });
+
+    await test('unread fetch: query, inbox total, plain text preferred, html parsed, deleted mail skipped', async () => {
+        const calls = {};
+        const r = await fetchGmailAccount('university', { sinceHours: 24, limitPerAccount: 50 }, fakeGmail(calls));
+        assert.strictEqual(r.status, 'ok');
+        assert.strictEqual(r.unreadTotal, 7);
+        assert.ok(/^is:unread in:inbox after:\d+$/.test(calls.list.q), calls.list.q);
+        assert.strictEqual(calls.list.maxResults, 50);
+        assert.strictEqual(calls.format, 'full');
+        assert.deepStrictEqual(r.emails.map(e => e.uid), ['a1', 'a2']);
+        assert.strictEqual(r.emails[0].body, 'הבחינה מחר בתשע');
+        assert.strictEqual(r.emails[0].messageKey, '<a1@huji>');
+        assert.ok(r.emails[0].date);
+        assert.ok(r.emails[1].body.includes('שלום') && r.emails[1].body.includes('עולם'));
+        assert.ok(!r.emails[1].body.includes('<'));
+    });
+    await test('Gmail mail runs through a full triage pass', async () => {
+        const r = await fetchGmailAccount('university', { sinceHours: 24 }, fakeGmail());
+        const { deps, sent } = makeDeps({
+            fetchUnread: async () => [r],
+            generate: async () => JSON.stringify([verdict(0, false, true), verdict(1, false)]),
+        });
+        const pass = await triage.runEmailTriagePass(deps);
+        assert.strictEqual(pass.classified, 2);
+        assert.strictEqual(sent.length, 1);
+        assert.ok(sent[0].includes('אוניברסיטה'));
+        assert.strictEqual(row('<a1@huji>').alert_status, 'sent');
+        assert.strictEqual(row('<a2@huji>').alert_status, 'none');
+    });
+    await test('read: body and attachments; list: split sender; ids stay strings', async () => {
+        const read = await readGmailMessage('university', 'a1', 3000, fakeGmail());
+        assert.strictEqual(read.body, 'הבחינה מחר בתשע');
+        assert.deepStrictEqual(read.attachments, [{ filename: 'room.pdf', size_kb: 2, contentType: 'application/pdf' }]);
+        const list = await listGmailMessages('university', 5, undefined, fakeGmail());
+        assert.strictEqual(list.count, 2);
+        assert.strictEqual(list.emails[0].uid, 'a1');
+        assert.strictEqual(list.emails[0].from, 'office@mail.huji.ac.il');
+        assert.strictEqual(list.emails[0].from_name, 'מזכירות');
+    });
+    await test('expired token gives an error naming the fix, not a crash', async () => {
+        const dead = fakeGmail();
+        dead.users.labels.get = async () => { throw Object.assign(new Error('invalid_grant'), { response: { data: { error: 'invalid_grant' } } }); };
+        const r = await fetchGmailAccount('university', {}, dead);
+        assert.strictEqual(r.status, 'error');
+        assert.ok(r.error.includes('auth:gmail:huji'));
+    });
+    await test('no token means not_configured, through the real routing', async () => {
+        const [r] = await fetchUnreadEmails({ account: 'university' });
+        assert.strictEqual(r.status, 'not_configured');
     });
 
     if (process.argv.includes('--live')) {

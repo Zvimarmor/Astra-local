@@ -1,3 +1,5 @@
+import fs from 'fs';
+import { google, gmail_v1 } from 'googleapis';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { config } from './config';
@@ -9,9 +11,13 @@ import { generateText } from './gemini';
  * Shared by the chat tool (manage_email action="digest") and, via the compiled
  * dist/email-fetcher.js, by the background triage in services/email-triage.ts.
  *
- * READ-ONLY, twice over: mailboxes are opened with EXAMINE (`readOnly: true`), so
- * looking at a message can never mark it read, and ImapFlow speaks IMAP only — there
- * is no send path in here.
+ * Accounts in config.imapAccounts use IMAP; accounts in config.gmailAccounts use the
+ * Gmail API (HUJI's Workspace blocks the App Passwords IMAP would need).
+ *
+ * READ-ONLY on both paths. IMAP mailboxes are opened with EXAMINE (`readOnly: true`), so
+ * looking at a message can never mark it read, and ImapFlow speaks IMAP only. The Gmail
+ * token only ever holds the gmail.readonly scope, so sending or changing labels is
+ * refused by Google itself. There is no send path in here.
  *
  * WHY THE DIGEST SUMMARIZES HERE AND NOT IN THE CHAT MODEL: email is attacker-written
  * text, and the chat model holds tools that change real data (tasks, calendar, money).
@@ -30,13 +36,18 @@ const MAX_BODY_CHARS = 1500;
 /** Newest N per account. A neglected inbox can hold thousands of unread. */
 const DIGEST_LIMIT_PER_ACCOUNT = 25;
 const SUMMARY_MAX_CHARS = 220;
+const GMAIL_TIMEOUT_MS = 20_000;
+const GMAIL_DEFAULT_LIMIT = 100;
+/** messages.get calls in flight at once; Gmail's per-user quota is generous but not unlimited. */
+const GMAIL_CONCURRENCY = 10;
 
 export const ACCOUNT_LABELS: Record<string, string> = { personal: 'Personal', university: 'University' };
 
 export interface FetchedEmail {
     account: string;
-    uid: number;
-    /** Stable across sessions (UIDs aren't guaranteed to be): Message-ID, else uidvalidity:uid. */
+    /** IMAP UID, or Gmail message id. What manage_email action="read" takes. */
+    uid: number | string;
+    /** Stable across sessions (UIDs aren't guaranteed to be): Message-ID, else uidvalidity:uid or the Gmail id. */
     messageKey: string;
     from: string;
     subject: string;
@@ -57,7 +68,7 @@ export interface FetchOptions {
     /** Only messages received in the last N hours. Omit for all unread. */
     sinceHours?: number;
     limitPerAccount?: number;
-    /** One account key from config.imapAccounts. Omit for all of them. */
+    /** One account name (see emailAccountNames). Omit for all of them. */
     account?: string;
 }
 
@@ -65,11 +76,15 @@ function oneLine(s: string, max: number): string {
     return s.replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-async function parseBody(source: Buffer | undefined): Promise<string> {
+function tidyBody(text: string, max: number): string {
+    return text.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, max);
+}
+
+async function parseBody(source: Buffer | undefined, max: number = MAX_BODY_CHARS): Promise<string> {
     if (!source) return '';
     try {
         const parsed = await simpleParser(source, { skipImageLinks: true, skipTextLinks: true });
-        return (parsed.text || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_BODY_CHARS);
+        return tidyBody(parsed.text || '', max);
     } catch {
         return '';   // truncated or malformed MIME: the headers still classify
     }
@@ -155,10 +170,187 @@ async function fetchAccount(account: string, opts: FetchOptions): Promise<Accoun
     }
 }
 
+// ─── Gmail API path ──────────────────────────────────────────────────────
+
+export function isGmailAccount(account: string): boolean {
+    return Object.prototype.hasOwnProperty.call(config.gmailAccounts, account);
+}
+
+export function emailAccountNames(): string[] {
+    return [...Object.keys(config.imapAccounts), ...Object.keys(config.gmailAccounts)];
+}
+
+/** Accounts that have credentials in place. For status lines, not a promise that they work. */
+export function connectedEmailAccounts(): string[] {
+    return emailAccountNames().filter(a => {
+        if (isGmailAccount(a)) return fs.existsSync(config.gmailAccounts[a].tokenPath);
+        return !!(config.imapAccounts[a].user && config.imapAccounts[a].password);
+    });
+}
+
+/**
+ * Built per call, not cached, so a token written by the auth script takes effect
+ * without restarting the gateway or the scheduler. null = not connected (not an error).
+ */
+export function getGmailApi(account: string): gmail_v1.Gmail | null {
+    const acct = config.gmailAccounts[account];
+    const clientPath = config.googleTasks.oauthClientPath;
+    if (!acct || !fs.existsSync(clientPath) || !fs.existsSync(acct.tokenPath)) return null;
+    try {
+        const raw = JSON.parse(fs.readFileSync(clientPath, 'utf8'));
+        const c = raw.installed || raw.web || raw;
+        const auth = new google.auth.OAuth2(c.client_id, c.client_secret);
+        auth.setCredentials(JSON.parse(fs.readFileSync(acct.tokenPath, 'utf8')));
+        return google.gmail({ version: 'v1', auth, timeout: GMAIL_TIMEOUT_MS } as any);
+    } catch (err: any) {
+        console.error(`[EmailFetcher] ${account}: could not load Gmail credentials:`, err?.message);
+        return null;
+    }
+}
+
+function gmailErrorText(err: any): string {
+    const text = oneLine(String(err?.response?.data?.error_description || err?.message || err), 200);
+    return /invalid_grant|invalid_rapt/.test(`${err?.response?.data?.error} ${text}`)
+        ? 'Google sign-in expired or was revoked: run npm run auth:gmail:huji'
+        : text;
+}
+
+function gmailHeader(m: gmail_v1.Schema$Message, name: string): string {
+    const h = (m.payload?.headers || []).find(x => x.name?.toLowerCase() === name);
+    return h?.value || '';
+}
+
+function gmailDate(m: gmail_v1.Schema$Message): string {
+    const ms = Number(m.internalDate);
+    return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '';
+}
+
+function collectGmailParts(part: gmail_v1.Schema$MessagePart | undefined, out: gmail_v1.Schema$MessagePart[] = []): gmail_v1.Schema$MessagePart[] {
+    if (!part) return out;
+    out.push(part);
+    for (const child of part.parts || []) collectGmailParts(child, out);
+    return out;
+}
+
+/** Plain text if the message has it; HTML otherwise, through the same parser as IMAP mail. */
+async function gmailBody(m: gmail_v1.Schema$Message, max: number = MAX_BODY_CHARS): Promise<string> {
+    const parts = collectGmailParts(m.payload).filter(p => !p.filename && p.body?.data);
+    const decode = (p: gmail_v1.Schema$MessagePart) => Buffer.from(p.body!.data!, 'base64url');
+    const plain = parts.find(p => p.mimeType === 'text/plain');
+    if (plain) return tidyBody(decode(plain).toString('utf8'), max);
+    const html = parts.find(p => p.mimeType === 'text/html');
+    if (!html) return '';
+    return parseBody(Buffer.concat([Buffer.from('Content-Type: text/html; charset=utf-8\r\n\r\n'), decode(html)]), max);
+}
+
+/** Fetches `ids` in order. A message deleted since it was listed is skipped. */
+async function getGmailMessages(api: gmail_v1.Gmail, ids: string[], params: gmail_v1.Params$Resource$Users$Messages$Get): Promise<gmail_v1.Schema$Message[]> {
+    const out: gmail_v1.Schema$Message[] = [];
+    for (let i = 0; i < ids.length; i += GMAIL_CONCURRENCY) {
+        const got = await Promise.all(ids.slice(i, i + GMAIL_CONCURRENCY).map(id =>
+            api.users.messages.get({ ...params, userId: 'me', id }).then(r => r.data).catch((e: any) => {
+                if ((e?.code ?? e?.response?.status) === 404) return null;
+                throw e;
+            })
+        ));
+        for (const m of got) if (m) out.push(m);
+    }
+    return out;
+}
+
+function gmailSender(m: gmail_v1.Schema$Message): string {
+    return oneLine(gmailHeader(m, 'from') || '(unknown)', 160);
+}
+
+export async function fetchGmailAccount(account: string, opts: FetchOptions, api: gmail_v1.Gmail | null = getGmailApi(account)): Promise<AccountFetch> {
+    if (!api) return { account, status: 'not_configured', unreadTotal: 0, emails: [] };
+    try {
+        const inbox = await api.users.labels.get({ userId: 'me', id: 'INBOX' });
+        let q = 'is:unread in:inbox';
+        if (opts.sinceHours) q += ` after:${Math.floor((Date.now() - opts.sinceHours * 3_600_000) / 1000)}`;
+        const listed = await api.users.messages.list({ userId: 'me', q, maxResults: opts.limitPerAccount || GMAIL_DEFAULT_LIMIT });
+        const ids = (listed.data.messages || []).map(m => m.id!).filter(Boolean);
+
+        const emails: FetchedEmail[] = [];
+        // format 'full' leaves attachment bytes out, so a large attachment costs nothing here.
+        for (const m of await getGmailMessages(api, ids, { format: 'full' })) {
+            emails.push({
+                account,
+                uid: m.id!,
+                messageKey: gmailHeader(m, 'message-id') || m.id!,
+                from: gmailSender(m),
+                subject: oneLine(gmailHeader(m, 'subject') || '(no subject)', 200),
+                date: gmailDate(m),
+                body: await gmailBody(m),
+            });
+        }
+        return { account, status: 'ok', unreadTotal: inbox.data.messagesUnread || 0, emails };
+    } catch (err: any) {
+        const error = gmailErrorText(err);
+        console.error(`[EmailFetcher] ${account}: ${error}`);
+        return { account, status: 'error', unreadTotal: 0, emails: [], error };
+    }
+}
+
+const GMAIL_NOT_CONNECTED = 'חשבון האוניברסיטה לא מחובר עדיין: צריך להריץ npm run auth:gmail:huji.';
+
+/** Gmail counterpart of list_recent_emails: same fields, with a Gmail id as the uid. */
+export async function listGmailMessages(account: string, count: number, folder?: string, api: gmail_v1.Gmail | null = getGmailApi(account)): Promise<Record<string, any>> {
+    if (!api) return { status: 'not_configured', message: GMAIL_NOT_CONNECTED, account };
+    try {
+        const box = folder || 'INBOX';
+        const listed = await api.users.messages.list({ userId: 'me', q: `in:"${box.replace(/"/g, '')}"`, maxResults: count });
+        const ids = (listed.data.messages || []).map(m => m.id!).filter(Boolean);
+        const messages = await getGmailMessages(api, ids, { format: 'metadata', metadataHeaders: ['From', 'To', 'Subject'] });
+        const emails = messages.map(m => {
+            const from = gmailSender(m);
+            const match = from.match(/^(.*?)\s*<(.+)>$/);
+            return {
+                uid: m.id,
+                subject: gmailHeader(m, 'subject') || '(no subject)',
+                from: match ? match[2] : from,
+                from_name: match ? match[1].replace(/^"|"$/g, '') : '',
+                date: gmailDate(m),
+                to: gmailHeader(m, 'to'),
+            };
+        });
+        return { emails, count: emails.length, account, folder: box };
+    } catch (err: any) {
+        return { status: 'error', error: gmailErrorText(err), account };
+    }
+}
+
+/** Gmail counterpart of read_email. */
+export async function readGmailMessage(account: string, id: string, maxChars: number, api: gmail_v1.Gmail | null = getGmailApi(account)): Promise<Record<string, any>> {
+    if (!api) return { status: 'not_configured', message: GMAIL_NOT_CONNECTED, account };
+    try {
+        const [m] = await getGmailMessages(api, [id], { format: 'full' });
+        if (!m) return { status: 'error', error: `Email ${id} not found.`, account };
+        const attachments = collectGmailParts(m.payload).filter(p => p.filename);
+        return {
+            uid: m.id,
+            subject: gmailHeader(m, 'subject') || '(no subject)',
+            from: gmailSender(m),
+            to: gmailHeader(m, 'to'),
+            date: gmailDate(m),
+            body: (await gmailBody(m, maxChars)) || '(no text content)',
+            hasAttachments: attachments.length > 0,
+            attachments: attachments.map(a => ({
+                filename: a.filename,
+                size_kb: Math.round((a.body?.size || 0) / 1024),
+                contentType: a.mimeType,
+            })),
+            account,
+        };
+    } catch (err: any) {
+        return { status: 'error', error: gmailErrorText(err), account };
+    }
+}
+
 /** Unread mail per account. Never throws: a broken account comes back with status 'error'. */
 export async function fetchUnreadEmails(opts: FetchOptions = {}): Promise<AccountFetch[]> {
-    const names = opts.account ? [opts.account] : Object.keys(config.imapAccounts);
-    return Promise.all(names.map(n => fetchAccount(n, opts)));
+    const names = opts.account ? [opts.account] : emailAccountNames();
+    return Promise.all(names.map(n => (isGmailAccount(n) ? fetchGmailAccount(n, opts) : fetchAccount(n, opts))));
 }
 
 const SUMMARY_SYSTEM_PROMPT = [
@@ -234,7 +426,7 @@ export const emailFetcherTools = {
             if (!usable.length && !failed.length) {
                 return {
                     status: 'not_configured',
-                    message: 'חשבונות המייל לא מחוברים עדיין: חסרים IMAP_USER ו-IMAP_PASSWORD בקובץ .env.',
+                    message: 'חשבונות המייל לא מחוברים עדיין: חסרים IMAP_USER ו-IMAP_PASSWORD בקובץ .env, ולאוניברסיטה צריך להריץ npm run auth:gmail:huji.',
                 };
             }
 

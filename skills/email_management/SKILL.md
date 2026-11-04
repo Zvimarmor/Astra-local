@@ -15,7 +15,7 @@
 |---|---|
 | `digest` | all unread, grouped by account, one sentence each. Optional `account` |
 | `list` | recent emails, read or unread (`count`, `account`, `folder`) |
-| `read` | one full email by `uid` + `account` |
+| `read` | one full email by `uid` + `account`. Pass `uid` exactly as given; for `university` it isn't a number |
 
 Accounts are `personal` and `university`.
 

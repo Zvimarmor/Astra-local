@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { config } from './config';
+import { emailAccountNames, getGmailApi, isGmailAccount, listGmailMessages } from './email-fetcher';
 
 /**
  * Email Digest Tool — Safe Read-Only Summary
@@ -26,7 +27,31 @@ interface EmailDigestEntry {
     error?: string;
 }
 
+/** Same metadata-only digest for a Gmail API account: headers and counts, no bodies. */
+async function getGmailDigest(accountName: string): Promise<EmailDigestEntry> {
+    const empty = { account: accountName, total_recent: 0, unseen: 0, top_emails: [] };
+    const api = getGmailApi(accountName);
+    if (!api) return { ...empty, status: 'not_configured' };
+    try {
+        const inbox = await api.users.labels.get({ userId: 'me', id: 'INBOX' });
+        const recent = await listGmailMessages(accountName, 5, undefined, api);
+        if (recent.status === 'error') return { ...empty, status: 'error', error: recent.error };
+        return {
+            account: accountName,
+            total_recent: Math.min(inbox.data.messagesTotal || 0, 100), // cap for display
+            unseen: inbox.data.messagesUnread || 0,
+            top_emails: recent.emails.map((e: any) => ({ from: e.from_name || e.from, subject: e.subject, date: e.date })),
+            status: 'ok',
+        };
+    } catch (err: any) {
+        console.error(`[EmailDigest] Error for ${accountName}:`, err.message);
+        return { ...empty, status: 'error', error: err.message };
+    }
+}
+
 async function getAccountDigest(accountName: string): Promise<EmailDigestEntry> {
+    if (isGmailAccount(accountName)) return getGmailDigest(accountName);
+
     const acct = config.imapAccounts[accountName];
 
     // Check if account is configured
@@ -128,7 +153,7 @@ export const emailDigestTools = {
         parameters: { type: "object", properties: {} },
         execute: async () => {
             try {
-                const accountNames = Object.keys(config.imapAccounts);
+                const accountNames = emailAccountNames();
                 const digests: EmailDigestEntry[] = [];
 
                 for (const name of accountNames) {
@@ -142,7 +167,7 @@ export const emailDigestTools = {
                 if (configuredCount === 0) {
                     return {
                         status: "not_configured",
-                        message: "No email accounts configured. Set IMAP_USER and IMAP_PASSWORD in .env to enable email digest.",
+                        message: "No email accounts configured. Set IMAP_USER and IMAP_PASSWORD in .env, or run npm run auth:gmail:huji, to enable email digest.",
                     };
                 }
 

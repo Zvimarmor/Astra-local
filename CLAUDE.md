@@ -139,9 +139,12 @@ model failure records nothing, so mail is retried; content the model can't class
 from a separate tool-less `generateText()` call (`manage_email action="digest"`). The exception is
 `action="read"`, which the user asks for to draft a reply. **There is deliberately no send tool:**
 `manage_email` is read-only and replies are drafts the user sends themselves. A skill rule alone isn't
-enforcement, so adding a send tool would need a code-level confirmation gate. IMAP needs
-`IMAP_USER`/`IMAP_PASSWORD` (and `_UNI`) in `.env`; with them empty, the 17:00 digest skips as if the
-inbox were empty. `npm run test:email-triage -- --live` checks it on sample payloads (two Gemini requests).
+enforcement, so adding a send tool would need a code-level confirmation gate. The personal account
+needs `IMAP_USER`/`IMAP_PASSWORD` in `.env`; with them empty, the 17:00 digest skips as if the inbox
+were empty. **The university account uses the Gmail API, not IMAP**, because HUJI's Workspace blocks
+App Passwords: `config.gmailAccounts` routes it in `email-fetcher.ts`, on a `gmail.readonly` token in
+`data/gmail_huji_token.json` (gitignored) from `npm run auth:gmail:huji`. Its message ids are strings,
+so `manage_email`'s `uid` is a string. The token is read per call, so no restart is needed after auth. `npm run test:email-triage -- --live` checks it on sample payloads (two Gemini requests).
 
 **Transit uses a different Google credential than Calendar (2026-08-27).** `tools/transit.ts` calls
 the Maps **Directions API**, which is key-authenticated (`GOOGLE_MAPS_API_KEY`) and does *not*

@@ -60,7 +60,7 @@ const nutritionStore = require(path.join(DIST, 'nutrition-store.js'));
 const { GUEST_USER } = require(path.join(DIST, 'nutrition.js'));
 // Urgent-email triage: the fetcher and the Gemini client it needs (see email-triage.ts).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { fetchUnreadEmails } = require(path.join(DIST, 'email-fetcher.js'));
+const { fetchUnreadEmails, connectedEmailAccounts } = require(path.join(DIST, 'email-fetcher.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { generateText } = require(path.join(DIST, 'gemini.js'));
 
@@ -876,7 +876,7 @@ console.log(
 console.log(
     config.emailTriage.enabled
         ? `[EmailTriage] enabled | every ${config.emailTriage.pollMinutes}m | model ${config.emailTriage.model} | ` +
-          `accounts: ${Object.keys(config.imapAccounts).filter(a => config.imapAccounts[a].user && config.imapAccounts[a].password).join(', ') || 'NONE CONFIGURED'}`
+          `accounts: ${connectedEmailAccounts().join(', ') || 'NONE CONFIGURED'}`
         : '[EmailTriage] disabled (EMAIL_TRIAGE_ENABLED is not true)',
 );
 
