@@ -126,11 +126,9 @@ Gemini has a 1M context — so these are cheap to bring back.
 
 | Tool | Actions it would add | Re-enable by | Caveat |
 |---|---|---|---|
-| `manage_email` | `list`, `read`, `digest` | uncomment the block + its `HELP_META` line | read-only, IMAP; the 17:00 digest **already works** via the scheduler |
 | `manage_photos` | `stats`, `search`, `list_albums`, `create_album`, `add_to_album` | same comment block | needs Immich up |
 
-Both live in the *same* comment block, so uncommenting brings back both unless you split it.
-There is no skill for `manage_email` — write one if you re-enable it.
+`manage_email` was re-enabled 2026-11-04 with `digest`, `list` and `read`; see `skills/email_management/`.
 
 **After any change here: `npm run build`** (output is flat — `dist/mcp-server.js`, no `dist/tools/`).
 
@@ -420,7 +418,7 @@ twice on 2026-08-06, that's the difference between a feature that works and one 
 | `deadline_watch` | **disabled** (was 07:30) | merged into `morning_briefing`; job still callable |
 | `morning_briefing` | 08:00 daily | **the unified daily report** — agenda, deadlines, all open tasks, habits, money |
 | `budget_check` | 12:00 daily | silent unless a budget is breached |
-| `email_digest` | 17:00 daily | silent if no mail |
+| `email_digest` | 17:00 daily | silent if no mail, **and also if IMAP isn't configured** |
 | `stale_task_nudge` | Sun 19:00 | undated tasks pending 3+ weeks — **silent if nothing** |
 | `evening_review` | 20:00 daily | tomorrow's agenda, spend, top task, **habit streaks** |
 | `weekly_recap` | Sat 20:30 | week in review |

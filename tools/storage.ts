@@ -120,6 +120,23 @@ db.exec(`
         last_notified_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS email_triage (
+        account TEXT NOT NULL,
+        message_key TEXT NOT NULL,
+        sender TEXT,
+        subject TEXT,
+        received_at TEXT,
+        needs_action INTEGER NOT NULL DEFAULT 0,
+        event_soon INTEGER NOT NULL DEFAULT 0,
+        summary TEXT,
+        proposed_action TEXT,
+        event_time TEXT,
+        alert_status TEXT NOT NULL DEFAULT 'none',
+        triaged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        alerted_at TEXT,
+        PRIMARY KEY (account, message_key)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
     CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
@@ -1411,6 +1428,39 @@ export function setSetting(key: string, value: string): void {
         'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ' +
         'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP'
     ).run(key, value);
+}
+
+// ─── Email triage (services/email-triage.ts) ─────────────────────────────────
+// Metadata only, never bodies. summary/proposed_action/event_time are filled just for
+// mail that alerts. alert_status: 'none' (silent) | 'pending' (queued) | 'sent'.
+export function getTriagedEmailKeys(account: string, keys: string[]): Set<string> {
+    const known = new Set<string>();
+    const stmt = db.prepare('SELECT 1 FROM email_triage WHERE account = ? AND message_key = ?');
+    for (const k of keys) if (stmt.get(account, k)) known.add(k);
+    return known;
+}
+
+export function recordEmailTriage(row: {
+    account: string; message_key: string; sender: string; subject: string; received_at: string;
+    needs_action: number; event_soon: number; summary: string | null; proposed_action: string | null;
+    event_time: string | null; alert_status: string;
+}): void {
+    db.prepare(
+        `INSERT OR IGNORE INTO email_triage
+           (account, message_key, sender, subject, received_at, needs_action, event_soon, summary, proposed_action, event_time, alert_status)
+         VALUES (@account, @message_key, @sender, @subject, @received_at, @needs_action, @event_soon, @summary, @proposed_action, @event_time, @alert_status)`
+    ).run(row);
+}
+
+export function getPendingEmailAlerts(): any[] {
+    return db.prepare("SELECT * FROM email_triage WHERE alert_status = 'pending' ORDER BY received_at").all();
+}
+
+export function markEmailAlertsSent(rows: { account: string; message_key: string }[]): void {
+    const stmt = db.prepare(
+        "UPDATE email_triage SET alert_status = 'sent', alerted_at = CURRENT_TIMESTAMP WHERE account = ? AND message_key = ?"
+    );
+    db.transaction(() => { for (const r of rows) stmt.run(r.account, r.message_key); })();
 }
 
 // ─── Unauthorized-sender redirect notices ────────────────────────────────────

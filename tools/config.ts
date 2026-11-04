@@ -158,6 +158,20 @@ export const config = {
         ownerChatId: (process.env.TELEGRAM_OWNER_CHAT_ID || '').trim(),
     },
 
+    // Background urgent-email triage (services/email-triage.ts, run by the scheduler).
+    // Opt-in: when on, bodies of new unread mail go to Gemini and alerts go to WhatsApp.
+    emailTriage: {
+        enabled: (process.env.EMAIL_TRIAGE_ENABLED || 'false').toLowerCase() === 'true',
+        pollMinutes: Math.max(5, parseInt(process.env.EMAIL_TRIAGE_POLL_MIN || '15', 10)),
+        windowHours: parseInt(process.env.EMAIL_TRIAGE_WINDOW_HOURS || '24', 10),
+        batchSize: Math.max(1, parseInt(process.env.EMAIL_TRIAGE_BATCH_SIZE || '10', 10)),
+        // Also used by the on-demand digest. Lite has the roomy quota; a pass with no
+        // new mail makes no call at all.
+        model: (process.env.EMAIL_TRIAGE_MODEL || 'gemini-flash-lite-latest').trim(),
+        // Consecutive failed passes before the owner is told (12 × 15min = 3h).
+        failureNoticeAfter: Math.max(1, parseInt(process.env.EMAIL_TRIAGE_FAILURE_NOTICE_AFTER || '12', 10)),
+    },
+
     // SMTP — SEND-side email, used ONLY for out-of-band alerts (normal email is
     // read-only IMAP above). Defaults to Gmail; creds fall back to the personal
     // IMAP account since a Gmail app password works for both IMAP and SMTP.

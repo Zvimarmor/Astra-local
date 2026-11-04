@@ -28,6 +28,7 @@ import {
     splitQueue, rollingBlock, missedDeadlineBlock, CHRONIC_ROLLOVER_THRESHOLD,
     type EventLike, type TaskLike,
 } from './report-format';
+import { runEmailTriagePass } from './email-triage';
 
 // ─── Reuse compiled tool logic from ../dist (runtime require, not a TS import,
 //     so it sidesteps the services rootDir boundary). config.js loads .env. ───
@@ -57,6 +58,11 @@ const { sendOutOfBandAlert } = require(path.join(DIST, 'alert.js'));
 const nutritionStore = require(path.join(DIST, 'nutrition-store.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { GUEST_USER } = require(path.join(DIST, 'nutrition.js'));
+// Urgent-email triage: the fetcher and the Gemini client it needs (see email-triage.ts).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { fetchUnreadEmails } = require(path.join(DIST, 'email-fetcher.js'));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { generateText } = require(path.join(DIST, 'gemini.js'));
 
 const TZ: string = config.timezone;
 // Display name used in the Hebrew greeting ("בוקר טוב צבי!").
@@ -806,6 +812,49 @@ async function tick(): Promise<void> {
     }
 }
 
+// ─── Urgent-email triage ──────────────────────────────────────────────
+// On its own timer rather than in tick(): a pass can take minutes (IMAP + LLM), and
+// no due briefing should wait on it. Decisions live in email-triage.ts.
+
+let triaging = false;
+
+async function emailTriageTimer(): Promise<void> {
+    if (triaging) return;
+    triaging = true;
+    try {
+        const r = await runEmailTriagePass({
+            fetchUnread: fetchUnreadEmails,
+            generate: (systemInstruction: string, text: string, maxOutputTokens: number) => generateText(text, {
+                model: config.emailTriage.model,
+                systemInstruction,
+                responseMimeType: 'application/json',
+                temperature: 0,
+                maxOutputTokens,
+            }),
+            getTriagedKeys: storage.getTriagedEmailKeys,
+            record: storage.recordEmailTriage,
+            getPendingAlerts: storage.getPendingEmailAlerts,
+            markAlertsSent: storage.markEmailAlertsSent,
+            getSetting: storage.getSetting,
+            setSetting: storage.setSetting,
+            notify: notifyOwner,
+            quiet: () => inQuietHours(localNow()).quiet,
+            now: () => new Date(),
+            timezone: TZ,
+            windowHours: config.emailTriage.windowHours,
+            batchSize: config.emailTriage.batchSize,
+            failureNoticeAfter: config.emailTriage.failureNoticeAfter,
+        });
+        if (r.newEmails || r.alerted || r.held || r.failed) {
+            console.log(`[EmailTriage] new=${r.newEmails} classified=${r.classified} alerted=${r.alerted} held=${r.held} failed=${r.failed}`);
+        }
+    } catch (err: any) {
+        console.error('[EmailTriage] unexpected error —', String(err?.message || err).slice(0, 200));
+    } finally {
+        triaging = false;
+    }
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────
 
 console.log('╔══════════════════════════════════════════════════╗');
@@ -824,5 +873,16 @@ console.log(
         : '[Watchdog] disabled (SCHEDULER_WATCHDOG=false)',
 );
 
+console.log(
+    config.emailTriage.enabled
+        ? `[EmailTriage] enabled | every ${config.emailTriage.pollMinutes}m | model ${config.emailTriage.model} | ` +
+          `accounts: ${Object.keys(config.imapAccounts).filter(a => config.imapAccounts[a].user && config.imapAccounts[a].password).join(', ') || 'NONE CONFIGURED'}`
+        : '[EmailTriage] disabled (EMAIL_TRIAGE_ENABLED is not true)',
+);
+
 void tick();
 setInterval(() => { void tick(); }, TICK_MS);
+if (config.emailTriage.enabled) {
+    void emailTriageTimer();
+    setInterval(() => { void emailTriageTimer(); }, config.emailTriage.pollMinutes * 60 * 1000);
+}

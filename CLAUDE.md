@@ -47,7 +47,7 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 { name, description, parameters /* JSON Schema */, execute: async (args) => Record<string, any> }
 ```
 
-**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **11 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `assistant_utils`, plus the actionless `plan_day` — 61 actions total) and routes each `action` into the domain `execute()` underneath. Two more blocks (`manage_email`, `manage_photos`) are **commented out** in `mega-tools.ts`, as are their `HELP_META` entries.
+**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **12 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `manage_email`, `assistant_utils`, plus the actionless `plan_day` — 64 actions total) and routes each `action` into the domain `execute()` underneath. One more block (`manage_photos`) is **commented out** in `mega-tools.ts`, as is its `HELP_META` entry.
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
 
@@ -127,6 +127,21 @@ reconcile (new rows, rollovers); only **completion** flows back, pulled by `list
 Google is unlinked (`google_task_id = '-'`), never re-created. Every sync path is best-effort and
 never fails the task action. The MCP server caches "no token" — restart the gateway after auth.
 If the consent screen is left in "Testing" mode the refresh token dies after 7 days.
+
+**Email triage is the scheduler's one path with an LLM in it (2026-11-04), and it's opt-in.**
+`services/email-triage.ts` runs on its own timer in the scheduler process when
+`EMAIL_TRIAGE_ENABLED=true`: every 15 min it classifies new unread mail from the last 24h and sends
+one WhatsApp alert if a mail needs a decision or has an event within 48h; anything else is stored
+in `email_triage` as metadata only. Quiet hours hold alerts rather than skipping the pass, since
+Shabbat is longer than the fetch window. A pass with no new mail makes no Gemini call. A transient
+model failure records nothing, so mail is retried; content the model can't classify becomes an alert.
+**Email text is attacker-controlled, so it reaches the chat model only as a one-sentence summary**
+from a separate tool-less `generateText()` call (`manage_email action="digest"`). The exception is
+`action="read"`, which the user asks for to draft a reply. **There is deliberately no send tool:**
+`manage_email` is read-only and replies are drafts the user sends themselves. A skill rule alone isn't
+enforcement, so adding a send tool would need a code-level confirmation gate. IMAP needs
+`IMAP_USER`/`IMAP_PASSWORD` (and `_UNI`) in `.env`; with them empty, the 17:00 digest skips as if the
+inbox were empty. `npm run test:email-triage -- --live` checks it on sample payloads (two Gemini requests).
 
 **Transit uses a different Google credential than Calendar (2026-08-27).** `tools/transit.ts` calls
 the Maps **Directions API**, which is key-authenticated (`GOOGLE_MAPS_API_KEY`) and does *not*

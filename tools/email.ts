@@ -66,7 +66,7 @@ export const emailTools = {
 
             try {
                 client = await getImapClient(account);
-                const lock = await client.getMailboxLock(folder);
+                const lock = await client.getMailboxLock(folder, { readOnly: true });
 
                 try {
                     const status = await client.status(folder, { messages: true });
@@ -142,7 +142,7 @@ export const emailTools = {
 
             try {
                 client = await getImapClient(account);
-                const lock = await client.getMailboxLock('INBOX');
+                const lock = await client.getMailboxLock('INBOX', { readOnly: true });
 
                 try {
                     // Download the full message source

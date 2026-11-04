@@ -33,6 +33,10 @@ export interface GeminiOptions {
     timeoutMs?: number;
     /** Attempts on a retryable status before giving up. */
     retries?: number;
+    /** Kept apart from the prompt, so untrusted text in the prompt can't pose as instructions. */
+    systemInstruction?: string;
+    /** e.g. 'application/json' to force a parseable reply. */
+    responseMimeType?: string;
 }
 
 interface GeminiPart {
@@ -60,9 +64,11 @@ async function generateContent(parts: GeminiPart[], opts: GeminiOptions = {}): P
 
     const body = {
         contents: [{ role: 'user', parts }],
+        ...(opts.systemInstruction ? { systemInstruction: { parts: [{ text: opts.systemInstruction }] } } : {}),
         generationConfig: {
             temperature: opts.temperature ?? 0.4,
             maxOutputTokens: opts.maxOutputTokens ?? 1024,
+            ...(opts.responseMimeType ? { responseMimeType: opts.responseMimeType } : {}),
         },
     };
 
