@@ -14,6 +14,7 @@ import { plannerTools } from '../planner';
 import { transitTools } from '../transit';
 import { tripCostTools } from '../trip-cost';
 import { isGoogleTasksEnabled } from '../google-tasks';
+import { makeHouseholdTool } from '../household-tools';
 
 /**
  * Told to the model ONLY when the Google Tasks OAuth token exists, so the claim is
@@ -91,6 +92,7 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes, commute time-blocking & car fuel cost', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "כמה יעלה לי דלק לנסוע לחיפה הלוך-חזור?"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
+    manage_household: { category: '💰 Money', blurb: 'shared house expenses with Michal, who owes whom, house shopping list', example: '"שילמתי 320 בשופרסל" · "תוסיפי לרשימה 2 חלב 3%"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
     manage_notes: { category: '📥 Info & memory', blurb: 'second-brain notes vault (auto-linked)', example: '"Save a note: …" · "What notes do I have about X?"' },
@@ -424,6 +426,10 @@ export const megaTools = {
             }
         },
     },
+
+    // ─── Household (shared with the roommate) — added 2026-11-10 ────────
+    // Acts as 'zvi'. The roommate's own server builds the same tool acting as 'michal'.
+    manage_household: makeHouseholdTool('zvi'),
 
     // ─── 5. Email (read-only IMAP) — RE-ENABLED 2026-11-04 ─────────────
     manage_email: {

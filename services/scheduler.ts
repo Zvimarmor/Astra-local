@@ -63,6 +63,10 @@ const { GUEST_USER } = require(path.join(DIST, 'nutrition.js'));
 const { fetchUnreadEmails, connectedEmailAccounts } = require(path.join(DIST, 'email-fetcher.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { generateText } = require(path.join(DIST, 'gemini.js'));
+// Shared household (owner + roommate): monthly digest, bill reminders, and the outbox
+// that the household tools queue alerts into. Its own store, like nutrition-store.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const household = require(path.join(DIST, 'household.js'));
 
 const TZ: string = config.timezone;
 // Display name used in the Hebrew greeting ("בוקר טוב צבי!").
@@ -587,6 +591,17 @@ async function runJob(s: any, n: LocalNow): Promise<{ status: string; message: s
             const msg = nutritionStore.buildEveningNudgeHe(GUEST_USER, config.guest.eveningNudgeThreshold);
             return { status: msg ? 'sent' : 'skipped_empty', message: msg };
         }
+        // ─── Household (queued to BOTH people via the household outbox) ───
+        // Daily rows that self-gate to once a month. They queue rather than return a
+        // message because they go to two people; deliverHouseholdOutbox() sends them.
+        case 'household_monthly_digest': {
+            if (!config.household.enabled) return { status: 'skipped_disabled', message: null };
+            return { status: household.runMonthlyDigestJob(n.dateStr) === 'queued' ? 'queued' : 'skipped_empty', message: null };
+        }
+        case 'household_bill_check': {
+            if (!config.household.enabled) return { status: 'skipped_disabled', message: null };
+            return { status: household.runBillCheckJob(n.dateStr) === 'queued' ? 'queued' : 'skipped_empty', message: null };
+        }
         case 'weekly_recap':
             return { status: 'sent', message: await buildWeeklyRecap(n.dateStr) };
         case 'monthly_finance_review': {
@@ -798,6 +813,16 @@ async function tick(): Promise<void> {
             }
         }
 
+        // Household outbox: alerts queued by the chat tools (either person's) and the
+        // household jobs above. Held during quiet hours, like every other proactive send.
+        if (config.household.enabled) {
+            try {
+                await deliverHouseholdOutbox(n);
+            } catch (err: any) {
+                console.error('[Household] outbox error —', String(err?.message || err).slice(0, 200));
+            }
+        }
+
         // Watchdog last: a diagnostic probe must never delay a due briefing, and
         // its own failure must never abort the tick that carries them.
         if (WD_ENABLED) {
@@ -809,6 +834,59 @@ async function tick(): Promise<void> {
         }
     } finally {
         ticking = false;
+    }
+}
+
+// ─── Household outbox ─────────────────────────────────────────────────
+// The household tools never send: they queue rows with the recipient set in code, and
+// this delivers them. Owner rows use notifyOwner (WhatsApp, then Telegram/email). Rows
+// for the roommate go to her WhatsApp only. The owner's fallback carriers are his, so
+// her messages are never re-routed. A row that keeps failing is given up on after
+// HH_MAX_ATTEMPTS ticks, and one held longer than HH_EXPIRE_HOURS (e.g. a broken
+// channel over Shabbat) expires rather than arriving stale.
+
+const HH_MAX_ATTEMPTS = 5;
+const HH_EXPIRE_HOURS = 48;
+
+async function deliverHouseholdOutbox(n: LocalNow): Promise<void> {
+    if (inQuietHours(n).quiet) return;
+    for (const row of household.getPendingOutbox()) {
+        const ageH = (Date.now() - new Date(String(row.created_at).replace(' ', 'T') + 'Z').getTime()) / 3600000;
+        if (ageH > HH_EXPIRE_HOURS) {
+            household.markOutbox(row.id, 'expired');
+            console.warn(`[Household] outbox #${row.id} (${row.kind} → ${row.recipient}) expired after ${Math.round(ageH)}h`);
+            continue;
+        }
+        let ok = false;
+        let err = '';
+        if (row.recipient === 'zvi') {
+            const r = await notifyOwner(`Astra: household ${row.kind}`, row.text);
+            ok = r.delivered;
+            if (!ok) err = 'no carrier delivered';
+        } else {
+            const target = config.household.roommateTarget;
+            if (!target) {
+                household.markOutbox(row.id, 'dropped', 'HOUSEHOLD_ROOMMATE_TARGET not set');
+                console.warn(`[Household] outbox #${row.id}: HOUSEHOLD_ROOMMATE_TARGET not set — dropped.`);
+                continue;
+            }
+            ok = await sendWhatsAppText(row.text, target);
+            if (!ok) err = 'WhatsApp send failed';
+        }
+        if (ok) {
+            household.markOutbox(row.id, 'sent');
+            console.log(`[Household] outbox #${row.id} (${row.kind}) → ${row.recipient}: sent`);
+        } else if (row.attempts + 1 >= HH_MAX_ATTEMPTS) {
+            household.markOutbox(row.id, 'failed', err);
+            console.error(`[Household] outbox #${row.id} (${row.kind}) → ${row.recipient}: gave up — ${err}`);
+            // Tell the owner his roommate didn't get it (only her rows; his own already fell back).
+            if (row.recipient === 'michal') {
+                household.queueMessage('zvi', 'delivery_failed',
+                    `⚠️ לא הצלחתי לשלוח למיכל הודעה (${row.kind}):\n\n${row.text}`);
+            }
+        } else {
+            household.markOutbox(row.id, 'pending', err);
+        }
     }
 }
 
@@ -878,6 +956,13 @@ console.log(
         ? `[EmailTriage] enabled | every ${config.emailTriage.pollMinutes}m | model ${config.emailTriage.model} | ` +
           `accounts: ${connectedEmailAccounts().join(', ') || 'NONE CONFIGURED'}`
         : '[EmailTriage] disabled (EMAIL_TRIAGE_ENABLED is not true)',
+);
+
+console.log(
+    config.household.enabled
+        ? `[Household] enabled | roommate target: ${config.household.roommateTarget ? 'set' : 'NOT SET'} | ` +
+          `balance alert > ${config.household.balanceAlertThreshold} | approval > ${config.household.approvalThreshold}`
+        : '[Household] disabled (HOUSEHOLD_ENABLED is not true)',
 );
 
 void tick();

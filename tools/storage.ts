@@ -342,6 +342,11 @@ db.exec(`
         ['stale_task_nudge', 19, 0, '0', 1],
         ['guest_nutrition_checkin', 18, 0, 'daily', 1],
         ['guest_nutrition_report', 21, 0, 'daily', 1],
+        // household_*: daily 10:00, each self-gates (digest: first sendable day of the
+        //   month; bills: from the check day of an expected billing month). Both go to
+        //   the owner AND the roommate via the household outbox (tools/household.ts).
+        ['household_monthly_digest', 10, 0, 'daily', 1],
+        ['household_bill_check', 10, 0, 'daily', 1],
     ];
     const tx = db.transaction(() => {
         for (const [job, h, m, days, enabled] of extras) ensure.run(job, h, m, days, enabled, job);

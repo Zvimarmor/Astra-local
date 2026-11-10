@@ -162,6 +162,27 @@ export const config = {
         bypassShabbat: (process.env.GUEST_BYPASS_SHABBAT || 'true').toLowerCase() !== 'false',
     },
 
+    // Shared household with a roommate (tools/household.ts, docs/HOUSEHOLD.md). The
+    // roommate talks to her own isolated agent (ASTRA_PROFILE=household) and gets the
+    // household alerts and digests here. The number lives in .env because the repo is public.
+    household: {
+        // Roommate's WhatsApp number, E.164. Empty ⇒ messages meant for her are dropped and logged.
+        roommateTarget: (process.env.HOUSEHOLD_ROOMMATE_TARGET || '').trim(),
+        // Off ⇒ the scheduler sends nothing household-related (the chat tools still work).
+        enabled: (process.env.HOUSEHOLD_ENABLED || 'false').toLowerCase() === 'true',
+        // Alert both when one owes the other more than this (₪).
+        balanceAlertThreshold: parseFloat(process.env.HOUSEHOLD_BALANCE_ALERT || '400'),
+        // A single expense above this (₪) waits for the other roommate's approval.
+        approvalThreshold: parseFloat(process.env.HOUSEHOLD_APPROVAL_THRESHOLD || '500'),
+        // Months (1-12) in which each bi-monthly bill is expected, checked from the 15th.
+        billMonths: {
+            electricity: (process.env.HOUSEHOLD_BILL_MONTHS_ELECTRICITY || '1,3,5,7,9,11'),
+            water: (process.env.HOUSEHOLD_BILL_MONTHS_WATER || '1,3,5,7,9,11'),
+            arnona: (process.env.HOUSEHOLD_BILL_MONTHS_ARNONA || '1,3,5,7,9,11'),
+        } as Record<string, string>,
+        billCheckDay: parseInt(process.env.HOUSEHOLD_BILL_CHECK_DAY || '15', 10),
+    },
+
     // Telegram (LEGACY channel → now the out-of-band ALERT carrier). Kept for easy
     // revert; used by the scheduler watchdog to warn when WhatsApp is down.
     // Token also lives in ~/.openclaw/openclaw.json.

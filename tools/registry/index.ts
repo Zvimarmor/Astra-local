@@ -12,6 +12,8 @@
  *
  *   owner (default) — the full mega-tool set + optional tools/private/*
  *   guest           — ONLY ./guest-tools (nutrition tracking)
+ *   household       — ONLY ./household-profile (the roommate's household tool)
+ *   anything else   — no tools (fail closed)
  *
  * OpenClaw registers two MCP servers pointing at this same build, differing
  * only by that env var, and routes the guest's chat to an agent bound to the
@@ -77,16 +79,30 @@ function loadPrivateTools(): Record<string, Tool> {
     return loaded;
 }
 
-export type AstraProfile = 'owner' | 'guest';
+export type AstraProfile = 'owner' | 'guest' | 'household' | 'invalid';
 
-/** Anything not exactly "guest" is the owner profile — fail closed is not the
- *  right default here (a typo must not silently strip the owner's tools), but a
- *  typo in the GUEST direction must not silently GRANT them either, which is why
- *  the guest server pins the value explicitly and start-up logs what it chose. */
-export const astraProfile: AstraProfile =
-    String(process.env.ASTRA_PROFILE || '').trim().toLowerCase() === 'guest' ? 'guest' : 'owner';
+/** Unset or "owner" → the owner profile. "guest" and "household" are the two isolated
+ *  profiles. Any OTHER value fails closed (no tools at all): a typo in an isolated
+ *  server's env must never fall through to the owner's tools. Start-up logs the choice. */
+function resolveProfile(raw: string | undefined): AstraProfile {
+    const v = String(raw || '').trim().toLowerCase();
+    if (v === '' || v === 'owner') return 'owner';
+    if (v === 'guest' || v === 'household') return v;
+    return 'invalid';
+}
+export const astraProfile: AstraProfile = resolveProfile(process.env.ASTRA_PROFILE);
 
 function buildRegistry(): Record<string, Tool> {
+    if (astraProfile === 'invalid') {
+        console.error(`[Registry] unknown ASTRA_PROFILE="${process.env.ASTRA_PROFILE}" — serving NO tools.`);
+        return {};
+    }
+    if (astraProfile === 'household') {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { householdProfileTools } = require('./household-profile');
+        console.error('[Registry] profile=household — owner tools NOT loaded.');
+        return { ...householdProfileTools };
+    }
     if (astraProfile === 'guest') {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { guestTools } = require('./guest-tools');

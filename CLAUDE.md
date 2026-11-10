@@ -47,7 +47,7 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 { name, description, parameters /* JSON Schema */, execute: async (args) => Record<string, any> }
 ```
 
-**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **12 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `manage_email`, `assistant_utils`, plus the actionless `plan_day` — 64 actions total) and routes each `action` into the domain `execute()` underneath. One more block (`manage_photos`) is **commented out** in `mega-tools.ts`, as is its `HELP_META` entry.
+**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **13 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_household`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `manage_email`, `assistant_utils`, plus the actionless `plan_day` — 77 actions total) and routes each `action` into the domain `execute()` underneath. One more block (`manage_photos`) is **commented out** in `mega-tools.ts`, as is its `HELP_META` entry.
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
 
@@ -62,16 +62,30 @@ survives only as a legacy read mirror of `COALESCE(deadline, planned_date)`; do 
 it runs inside the deterministic scheduler tick. `tools/task-queue.ts` holds the shared ranking +
 the 70% capacity factor used by `plan_day` and the free-slot suggester.
 
-### Two tool profiles — the guest agent
+### Three tool profiles — the guest and household agents
 
 `ASTRA_PROFILE` selects which surface `tools/mcp-server.ts` serves: unset/`owner` → the full
 mega-tool set + `tools/private/*`; `guest` → **only** `tools/registry/guest-tools.ts`
-(`track_nutrition`). OpenClaw registers both as separate MCP servers off the same build and routes
-one WhatsApp number to an isolated agent `gf`. **`tools/registry/index.ts` must keep loading
+(`track_nutrition`); `household` → **only** `tools/registry/household-profile.ts` (`manage_household`
+acting as the roommate). Any other value serves **no tools** (fail closed). OpenClaw registers each as a
+separate MCP server off the same build and routes one WhatsApp number to the isolated agent `gf`, another
+to `house`. **`tools/registry/index.ts` must keep loading
 `mega-tools` via a branched `require()`, never a top-level `import`** — a static import would
 execute storage/tasks/calendar (and `run_claude_code`) inside the guest process. Same rule for
 `guest-tools.ts`: it must not import any owner module. Full design + verification commands in
 `docs/GUEST-AGENT.md`.
+
+**Shared household (2026-11-10).** `tools/household.ts` holds shared expenses, settlements and the house
+shopping list for the owner and his roommate, on its own SQLite handle (like `nutrition-store.ts`), so the
+roommate's process never loads `storage.ts`. `makeHouseholdTool(actor)` closes over WHO is acting: the
+owner server builds it as `'zvi'`, the household server as `'michal'`. The model can't pick the identity,
+and approve/reject/delete are checked against it. Expenses split 50/50; anything over ₪500 or a plumber
+waits for the *other* person's approval and doesn't count until then. The tools never send. They queue
+rows in `household_outbox` with recipients set in code, and the scheduler delivers them on its tick,
+holding them through quiet hours. Rows to the owner fall back to Telegram/email; rows to the roommate go
+to her WhatsApp only. Off unless `HOUSEHOLD_ENABLED=true`; her number is `HOUSEHOLD_ROOMMATE_TARGET` in
+`.env`, never in the repo. `npm run test:household` (throwaway DB, sends nothing). Full write-up in
+`docs/HOUSEHOLD.md`.
 
 ### State & config
 
