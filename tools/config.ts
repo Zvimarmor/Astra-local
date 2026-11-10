@@ -174,11 +174,14 @@ export const config = {
         balanceAlertThreshold: parseFloat(process.env.HOUSEHOLD_BALANCE_ALERT || '400'),
         // A single expense above this (₪) waits for the other roommate's approval.
         approvalThreshold: parseFloat(process.env.HOUSEHOLD_APPROVAL_THRESHOLD || '500'),
-        // Months (1-12) in which each bi-monthly bill is expected, checked from the 15th.
+        // Months (1-12) in which each bill is expected, checked from billCheckDay. Empty or
+        // unset ⇒ no reminder for that bill (an explicitly empty value in .env counts).
         billMonths: {
-            electricity: (process.env.HOUSEHOLD_BILL_MONTHS_ELECTRICITY || '1,3,5,7,9,11'),
-            water: (process.env.HOUSEHOLD_BILL_MONTHS_WATER || '1,3,5,7,9,11'),
-            arnona: (process.env.HOUSEHOLD_BILL_MONTHS_ARNONA || '1,3,5,7,9,11'),
+            electricity: process.env.HOUSEHOLD_BILL_MONTHS_ELECTRICITY ?? '',
+            water: process.env.HOUSEHOLD_BILL_MONTHS_WATER ?? '',
+            arnona: process.env.HOUSEHOLD_BILL_MONTHS_ARNONA ?? '',
+            gas: process.env.HOUSEHOLD_BILL_MONTHS_GAS ?? '',
+            internet: process.env.HOUSEHOLD_BILL_MONTHS_INTERNET ?? '',
         } as Record<string, string>,
         billCheckDay: parseInt(process.env.HOUSEHOLD_BILL_CHECK_DAY || '15', 10),
     },

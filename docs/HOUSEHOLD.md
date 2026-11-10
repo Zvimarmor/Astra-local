@@ -35,10 +35,11 @@ Tables: `household_expenses`, `household_settlements`, `household_shopping_list`
   קופסאות טונה", "קרטון ביצים", "במבה x3". An item without one ("חלב") isn't added: the tool returns
   `needs_clarification` and the skill makes the model ask. Logging a supermarket expense returns the
   open list so the model can offer to mark items as bought.
-- **Bill reminder.** From the 15th of an expected billing month, if no electricity/water/arnona expense
-  (`bill_type`) is logged that month, both get: "לא נרשם תשלום חשמל/מים החודש, תרצו שאזין סכום?".
-  Expected months are set per bill in `.env` (default: odd months for all three, an assumption to fix
-  to the real bills). The reminder is sent once a month.
+- **Bill reminder.** From the 15th of a month a bill is expected in, if no expense with that
+  `bill_type` is logged that month, both get e.g. "לא נרשם תשלום אינטרנט החודש, תרצו שאזין סכום?".
+  Expected months are set per bill in `.env` (`HOUSEHOLD_BILL_MONTHS_<BILL>`); unset means no reminder.
+  Currently configured: internet (Partner wifi, ₪94) every month; electricity, water and arnona are not
+  paid by them. Sent once a month.
 - **Monthly digest.** On the 1st at 10:00 (or the first non-quiet day up to the 7th), both get last
   month's total, the category breakdown, what each paid, the carried-over balance, and any pending
   approvals.

@@ -22,6 +22,7 @@ process.env.HOUSEHOLD_BILL_MONTHS_ELECTRICITY = '1,3,5,7,9,11';
 process.env.HOUSEHOLD_BILL_MONTHS_WATER = '1,3,5,7,9,11';
 process.env.HOUSEHOLD_BILL_MONTHS_ARNONA = '2,4,6,8,10,12';
 process.env.HOUSEHOLD_BILL_CHECK_DAY = '15';
+process.env.HOUSEHOLD_BILL_MONTHS_INTERNET = '';
 
 const DIST = path.join(__dirname, '..', 'dist');
 const origLog = console.log;
@@ -73,6 +74,8 @@ const section = (t) => console.log(`\n${t}`);
     eq(hh.detectBillType('חשבון מים לחודשיים'), 'water', 'מים → water');
     eq(hh.detectBillType('ארנונה'), 'arnona', 'ארנונה → arnona');
     eq(hh.detectBillType('ממים'), null, 'no false match inside a word');
+    eq(hh.detectBillType('וייפיי פרטנר'), 'internet', 'וייפיי פרטנר → internet');
+    eq(hh.detectBillType('Partner wifi'), 'internet', 'Partner wifi → internet');
     eq(hh.inferCategory('קניות בשופרסל', null), 'groceries', 'שופרסל → groceries');
     eq(hh.inferCategory('תיקון מזגן', null), 'maintenance', 'תיקון → maintenance');
     ok(hh.isSupermarketExpense('other', 'רמי לוי'), 'רמי לוי counts as a supermarket run');

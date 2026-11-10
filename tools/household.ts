@@ -191,7 +191,7 @@ const BILL_RE: [BillType, RegExp][] = [
     ['water', /(^|[\sו])מים($|\s)|תאגיד\s*המים|water/i],
     ['arnona', /ארנונה|arnona|municipal\s*tax/i],
     ['gas', /(^|[\sו])גז($|\s)|\bgas\b/i],
-    ['internet', /אינטרנט|internet|בזק|hot\b|הוט|פרטנר|סלקום|wifi/i],
+    ['internet', /אינטרנט|internet|בזק|hot\b|הוט|פרטנר|partner|סלקום|wi-?fi|וו?יי?פיי|ראוטר/i],
 ];
 
 export function detectBillType(description: string): BillType | null {
