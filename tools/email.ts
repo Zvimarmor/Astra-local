@@ -31,6 +31,10 @@ async function getImapClient(account: string): Promise<ImapFlow> {
             pass: acct.password,
         },
         logger: false,
+        // Bounded so a dead server can't stall the caller (see tools/tool-timeout.ts).
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+        socketTimeout: 30_000,
     });
 
     await client.connect();

@@ -5,6 +5,7 @@ import {
     ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { toolRegistry } from "./registry/index.js";
+import { executeWithTimeout } from "./tool-timeout.js";
 
 const server = new Server(
     {
@@ -37,7 +38,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
             throw new Error(`Tool not found: ${request.params.name}`);
         }
         
-        const result = await tool.execute(request.params.arguments);
+        // Time-limited: a stalled tool returns a timeout error instead of holding the turn (tool-timeout.ts).
+        const result = await executeWithTimeout(tool, request.params.arguments);
         
         return {
             content: [

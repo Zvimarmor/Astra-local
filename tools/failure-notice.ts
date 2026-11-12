@@ -22,7 +22,8 @@
 const CONTEXT_RE = /context overflow|prompt too large|context length|too many tokens|compaction/i;
 const OVERLOADED_RE = /overload|high demand|503|unavailable|temporarily/i;
 const QUOTA_RE = /rate.?limit|quota|429|resource_exhausted|too many requests|cooldown/i;
-const TIMEOUT_RE = /timed? ?out|timeout|deadline exceeded/i;
+// Includes the whole-turn ceiling (agents.defaults.timeoutSeconds), which aborts the run.
+const TIMEOUT_RE = /timed? ?out|timeout|deadline exceeded|aborted|abort/i;
 
 const DETAIL_MAX_CHARS = 200;
 
@@ -47,7 +48,7 @@ function friendlyNotice(t: string): string {
         return '⚠️ השרתים של Google עמוסים כרגע ולא הצלחתי לענות. נסה שוב בעוד כמה דקות — המשימות והנתונים שלך שמורים, לא נפגע כלום.';
     }
     if (TIMEOUT_RE.test(t)) {
-        return '⚠️ התשובה לקחה יותר מדי זמן ונקטעה. נסה לשאול שוב.';
+        return '⚠️ הפעולה לקחה יותר מדי זמן ונעצרה כדי לא לתקוע את המערכת — אפשר לנסות שוב.';
     }
     return '⚠️ משהו השתבש ולא הצלחתי לענות הפעם. נסה שוב בעוד רגע.';
 }

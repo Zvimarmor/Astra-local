@@ -19,7 +19,7 @@ async function immichFetch(endpoint: string, options: RequestInit = {}): Promise
         ...(options.headers || {})
     };
 
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), ...options, headers });
     
     // Immich can return 204 No Content for some operations
     if (res.status === 204) return null;

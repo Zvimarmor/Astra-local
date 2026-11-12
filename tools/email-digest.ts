@@ -77,6 +77,10 @@ async function getAccountDigest(accountName: string): Promise<EmailDigestEntry> 
                 pass: acct.password,
             },
             logger: false,
+            // Bounded so a dead server can't stall the caller (see tools/tool-timeout.ts).
+            connectionTimeout: 15_000,
+            greetingTimeout: 15_000,
+            socketTimeout: 30_000,
         });
 
         // Connect with timeout

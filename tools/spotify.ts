@@ -50,6 +50,7 @@ async function getAccessToken(): Promise<string> {
         method: 'POST',
         headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: config.spotify.refreshToken }),
+        signal: AbortSignal.timeout(15_000),
     });
     const data = await res.json() as any;
     if (!res.ok) {
@@ -65,6 +66,7 @@ async function api(endpoint: string, opts: { method?: string; body?: any } = {})
         method: opts.method || 'GET',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: opts.body ? JSON.stringify(opts.body) : undefined,
+        signal: AbortSignal.timeout(15_000),
     });
     if (res.status === 204) return null;
     const text = await res.text();

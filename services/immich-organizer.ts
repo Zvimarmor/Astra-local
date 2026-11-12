@@ -58,7 +58,7 @@ async function immichFetch(endpoint: string, options: RequestInit = {}): Promise
         headers['Accept'] = 'application/json';
     }
 
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), ...options, headers });
     
     if (res.status === 204) return null;
     

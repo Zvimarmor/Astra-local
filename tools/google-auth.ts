@@ -23,5 +23,6 @@ export function getGoogleAuth(scopes: string[] = SCOPES) {
  */
 export function getCalendarClient() {
     const auth = getGoogleAuth(['https://www.googleapis.com/auth/calendar']);
-    return google.calendar({ version: 'v3', auth });
+    // 15s per request, so a stalled Google call can't hold a tool open.
+    return google.calendar({ version: 'v3', auth, timeout: 15_000 } as any);
 }
