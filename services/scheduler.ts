@@ -53,6 +53,9 @@ const { reconcileGoogleTasks } = require(path.join(DIST, 'google-tasks.js'));
 const { checkWhatsAppHealth } = require(path.join(DIST, 'channel-health.js'));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { sendOutOfBandAlert } = require(path.join(DIST, 'alert.js'));
+// Relink WhatsApp from the phone: login QR delivered to Telegram (tools/whatsapp-relink.ts).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { runRelinkSession, pollRelinkCommand } = require(path.join(DIST, 'whatsapp-relink.js'));
 // Guest (non-owner) nutrition tracking — its own store, its own delivery target.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const nutritionStore = require(path.join(DIST, 'nutrition-store.js'));
@@ -735,7 +738,11 @@ async function runWatchdog(): Promise<void> {
         `Astra can't reach you on WhatsApp — proactive briefings are NOT being delivered.\n\n` +
         `Down for: ${downFor} (first failed probe ${new Date(downSince).toLocaleString('en-GB', { timeZone: TZ })})\n` +
         `Details: ${detail}\n\n` +
-        `Fix — on the Mac Mini, run and scan the QR:\n` +
+        (!h.probeError && !h.linked
+            ? `Fix: a login QR is being sent to this Telegram chat — scan it on Astra's phone ` +
+              `(WhatsApp → Linked Devices → Link a Device). Send /qr here for a fresh one.\n` +
+              `Fallback on the Mac Mini:\n`
+            : `Fix — on the Mac Mini, run and scan the QR:\n`) +
         `  openclaw channels login --channel whatsapp --account default\n\n` +
         `Verify with:\n  openclaw channels status --json\n\n` +
         `You will NOT get another email about this outage; the next one comes only ` +
@@ -744,9 +751,44 @@ async function runWatchdog(): Promise<void> {
     if (delivered) {
         storage.setSetting(K_STATE, 'down');
         console.error(`[Watchdog] 🔴 WhatsApp DOWN for ${downFor} — alert sent, going quiet until recovery.`);
+        // Logged out (credentials gone) → send a login QR to Telegram right away.
+        if (!h.probeError && !h.linked) await startRelink('watchdog: logged out');
     } else {
         console.error('[Watchdog] 🔴 WhatsApp DOWN but NO alert carrier worked — will retry in 30m.');
     }
+}
+
+// ─── Relink by QR on Telegram ─────────────────────────────────────────
+// When WhatsApp is logged out (not merely reconnecting), the login QR is sent to the
+// owner's Telegram chat and kept fresh in place; "/qr" there asks for a new one. A QR
+// login stops the WhatsApp channel first, so every start re-checks linked=false.
+
+const K_TG_OFFSET = 'relink.telegram_offset';
+let relinking = false;
+
+async function startRelink(reason: string): Promise<void> {
+    if (relinking) return;
+    const h = await checkWhatsAppHealth();
+    if (h.probeError || h.linked) {
+        console.log(`[Relink] not starting (${reason}): ${h.probeError ? `probe failed: ${h.probeError}` : 'WhatsApp is linked'}`);
+        return;
+    }
+    relinking = true;
+    console.log(`[Relink] starting (${reason})`);
+    // Not awaited by the tick: a session runs for minutes and must not delay due jobs.
+    void runRelinkSession()
+        .then((outcome: string) => console.log(`[Relink] session ended: ${outcome}`))
+        .catch((err: any) => console.error('[Relink] session error —', String(err?.message || err).slice(0, 200)))
+        .finally(() => { relinking = false; });
+}
+
+/** While WhatsApp is down, look for "/qr" from the owner on Telegram. */
+async function pollRelinkRequests(): Promise<void> {
+    if (storage.getSetting(K_STATE, 'ok') !== 'down' || relinking) return;
+    const offset = parseInt(storage.getSetting(K_TG_OFFSET, '0'), 10) || 0;
+    const { requested, nextOffset } = await pollRelinkCommand(offset);
+    if (nextOffset !== offset) storage.setSetting(K_TG_OFFSET, String(nextOffset));
+    if (requested) await startRelink('/qr from Telegram');
 }
 
 // ─── Main tick ────────────────────────────────────────────────────────
@@ -828,6 +870,7 @@ async function tick(): Promise<void> {
         if (WD_ENABLED) {
             try {
                 await runWatchdog();
+                await pollRelinkRequests();
             } catch (err: any) {
                 console.error('[Watchdog] unexpected error —', String(err?.message || err).slice(0, 200));
             }
