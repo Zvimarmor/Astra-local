@@ -965,9 +965,12 @@ async function emailTriageTimer(): Promise<void> {
             windowHours: config.emailTriage.windowHours,
             batchSize: config.emailTriage.batchSize,
             failureNoticeAfter: config.emailTriage.failureNoticeAfter,
+            recordInvite: storage.recordEmailInvite,
+            getPendingInvites: storage.getPendingEmailInvites,
+            markInvitesAsked: storage.markEmailInvitesAsked,
         });
-        if (r.newEmails || r.alerted || r.held || r.failed) {
-            console.log(`[EmailTriage] new=${r.newEmails} classified=${r.classified} alerted=${r.alerted} held=${r.held} failed=${r.failed}`);
+        if (r.newEmails || r.alerted || r.held || r.failed || r.invites) {
+            console.log(`[EmailTriage] new=${r.newEmails} classified=${r.classified} alerted=${r.alerted} held=${r.held} invites=${r.invites || 0} failed=${r.failed}`);
         }
     } catch (err: any) {
         console.error('[EmailTriage] unexpected error —', String(err?.message || err).slice(0, 200));

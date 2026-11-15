@@ -39,6 +39,16 @@ export interface Classification {
     proposed_action: string;
     /** The model could not assess this one; it is surfaced for a manual look. */
     unclassified?: boolean;
+    /** An event the recipient is invited to, if any (structurally valid; future-checked in the pass). */
+    invitation?: Invitation | null;
+}
+
+export interface Invitation {
+    title: string;
+    date: string;          // YYYY-MM-DD
+    start: string | null;  // HH:MM, null = all day
+    end: string | null;    // HH:MM
+    location: string | null;
 }
 
 export interface TriageDeps {
@@ -64,10 +74,15 @@ export interface TriageDeps {
     batchSize: number;
     /** Consecutive failed passes before the owner hears that triage is down. */
     failureNoticeAfter: number;
+    /** Event invitations: stored, then asked about ("add it to the calendar?"). Optional so
+     *  older callers keep working; without them invitations are simply not tracked. */
+    recordInvite?: (row: any) => void;
+    getPendingInvites?: (today: string) => any[];
+    markInvitesAsked?: (ids: number[]) => void;
 }
 
 const LIMIT_PER_ACCOUNT = 50;
-const OUTPUT_TOKENS_PER_EMAIL = 220;
+const OUTPUT_TOKENS_PER_EMAIL = 300; // incl. the optional invitation object
 const FIELD_MAX = 300;
 const FAIL_STREAK_KEY = 'email_triage_fail_streak';
 const FAIL_NOTICE_KEY = 'email_triage_fail_notified';
@@ -84,8 +99,10 @@ event_soon: does this contain an event, meeting or deadline that the recipient i
 
 Both are false for: newsletters, marketing and sales (even "ends tonight"), promotions, social media notifications, automated receipts and shipping updates, one-time login codes, routine system notifications, mailing-list chatter, public events the recipient merely could attend, and anything dated beyond 48 hours or already past.
 
+invitation: is the recipient invited to attend a specific event with a known date, at any time in the future (not limited to 48 hours)? Yes for: a personal invitation, a meeting or calendar invite, a job interview, a party or ceremony, and a talk, seminar or event of their own university, department, lab or workplace. No for: commercial marketing and sales webinars, company newsletters, mass promotions, and events already past. Resolve relative dates ("מחר", "next Tuesday") from the current time and the email's received date. If there is no clear date, it is not an invitation.
+
 Output only a JSON array with one object per email, nothing else:
-{"id": <number>, "needs_action": <true|false>, "event_soon": <true|false>, "event_time": "<when, in Hebrew, or empty>", "summary": "<one short Hebrew sentence: what this is>", "proposed_action": "<one short Hebrew sentence: the concrete next step for the recipient; required whenever either flag is true, e.g. confirm attendance, add it to the calendar, reply by a given time. Empty only when both flags are false>"}`;
+{"id": <number>, "needs_action": <true|false>, "event_soon": <true|false>, "event_time": "<when, in Hebrew, or empty>", "summary": "<one short Hebrew sentence: what this is>", "proposed_action": "<one short Hebrew sentence: the concrete next step for the recipient; required whenever either flag is true, e.g. confirm attendance, add it to the calendar, reply by a given time. Empty only when both flags are false>", "invitation": null or {"title": "<short event title, in the email's language>", "date": "YYYY-MM-DD", "start": "HH:MM or empty if unknown/all day", "end": "HH:MM or empty", "location": "<place or link, or empty>"}}`;
 
 export function shouldAlert(c: Classification): boolean {
     return c.needs_action === true || c.event_soon === true || c.unclassified === true;
@@ -123,9 +140,54 @@ export function parseClassifications(raw: string, batchSize: number): Map<number
             event_time: clip(item.event_time),
             summary: clip(item.summary),
             proposed_action: clip(item.proposed_action),
+            invitation: parseInvitation(item.invitation),
         });
     }
     return out;
+}
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Strict shape check: anything malformed means "no invitation", never a guessed event. */
+export function parseInvitation(v: any): Invitation | null {
+    if (!v || typeof v !== 'object') return null;
+    const title = clip(v.title).slice(0, 120);
+    const date = typeof v.date === 'string' ? v.date.trim() : '';
+    if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(Date.parse(`${date}T12:00:00Z`))) return null;
+    const start = typeof v.start === 'string' && HHMM.test(v.start.trim()) ? v.start.trim() : null;
+    let end = start && typeof v.end === 'string' && HHMM.test(v.end.trim()) ? v.end.trim() : null;
+    if (start && end && end <= start) end = null;
+    const location = clip(v.location).slice(0, 150) || null;
+    return { title, date, start, end, location };
+}
+
+/** Only invitations for today or later, and within a year (a typo'd year is not an event). */
+export function isUpcomingInvitation(inv: Invitation, today: string): boolean {
+    const yearAhead = `${Number(today.slice(0, 4)) + 1}${today.slice(4)}`;
+    return inv.date >= today && inv.date <= yearAhead;
+}
+
+function hebrewDay(date: string): string {
+    return new Date(`${date}T12:00:00Z`).toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+}
+
+export function inviteWhen(r: { event_date: string; start_time: string | null; end_time: string | null }): string {
+    const day = hebrewDay(r.event_date);
+    if (!r.start_time) return `${day} (כל היום)`;
+    return r.end_time ? `${day} · ${r.start_time}–${r.end_time}` : `${day} · ${r.start_time}`;
+}
+
+/** "Hey, want me to add this to the calendar?" — one message for all new invitations. */
+export function formatInviteQuestion(rows: any[]): string {
+    const many = rows.length > 1;
+    const L: string[] = [many ? `📅 היי, קיבלת ${rows.length} הזמנות לאירועים. תרצה שנוסיף אותן ליומן?` : '📅 היי, תרצה שנוסיף את האירוע הזה ליומן?'];
+    rows.forEach((r, i) => {
+        L.push('', `${many ? `${i + 1}. ` : ''}${b(r.title)}`, `🗓️ ${inviteWhen(r)}`);
+        if (r.location) L.push(`📍 ${r.location}`);
+        L.push(`✉️ מתוך מייל מ${r.sender || 'שולח לא ידוע'}`);
+    });
+    L.push('', many ? 'ענה "כן" (לכולן) או "כן 1, 3", ואוסיף.' : 'ענה "כן" ואוסיף.');
+    return compose(L);
 }
 
 /** Provider trouble, as opposed to a problem with this particular content. Retry next pass. */
@@ -204,6 +266,7 @@ export interface PassResult {
     alerted: number;
     held: number;
     failed: boolean;
+    invites?: number;
 }
 
 /** One full triage pass. Never throws; a failure is counted and retried next pass. */
@@ -225,8 +288,18 @@ export async function runEmailTriagePass(deps: TriageDeps): Promise<PassResult> 
 
         for (let i = 0; i < fresh.length; i += deps.batchSize) {
             const decided = await classifyEmails(fresh.slice(i, i + deps.batchSize), deps);
+            const today = deps.now().toLocaleDateString('sv-SE', { timeZone: deps.timezone });
             for (const [e, c] of decided) {
-                const alert = shouldAlert(c);
+                const inv = c.invitation && isUpcomingInvitation(c.invitation, today) && deps.recordInvite ? c.invitation : null;
+                if (inv) {
+                    deps.recordInvite!({
+                        account: e.account, message_key: e.messageKey, sender: e.from, subject: e.subject,
+                        title: inv.title, event_date: inv.date, start_time: inv.start, end_time: inv.end, location: inv.location,
+                    });
+                }
+                // An invitation gets its own "add to calendar?" question; the urgent alert
+                // fires for it only if it also needs a decision, so nothing is said twice.
+                const alert = inv ? (c.needs_action === true || c.unclassified === true) : shouldAlert(c);
                 deps.record({
                     account: e.account,
                     message_key: e.messageKey,
@@ -260,6 +333,19 @@ export async function runEmailTriagePass(deps: TriageDeps): Promise<PassResult> 
                 result.alerted = pending.length;
             } else {
                 result.held = pending.length;
+            }
+        }
+    }
+
+    // Invitations: ask once per invitation, outside quiet hours.
+    if (deps.getPendingInvites && deps.markInvitesAsked && !deps.quiet()) {
+        const today = deps.now().toLocaleDateString('sv-SE', { timeZone: deps.timezone });
+        const invites = deps.getPendingInvites(today);
+        if (invites.length) {
+            const sent = await deps.notify('Astra: event invitation', formatInviteQuestion(invites));
+            if (sent.delivered) {
+                deps.markInvitesAsked(invites.map((r: any) => r.id));
+                result.invites = invites.length;
             }
         }
     }

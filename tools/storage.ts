@@ -137,6 +137,27 @@ db.exec(`
         PRIMARY KEY (account, message_key)
     );
 
+    -- Event invitations found by email triage. Astra asks before adding one to the calendar.
+    -- status: pending (not yet asked) → asked → added | declined | expired
+    CREATE TABLE IF NOT EXISTS email_invites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account TEXT NOT NULL,
+        message_key TEXT NOT NULL,
+        sender TEXT,
+        subject TEXT,
+        title TEXT NOT NULL,
+        event_date TEXT NOT NULL,
+        start_time TEXT,
+        end_time TEXT,
+        location TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        calendar_event_id TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        asked_at TEXT,
+        decided_at TEXT,
+        UNIQUE (account, message_key)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
     CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);
@@ -1466,6 +1487,52 @@ export function markEmailAlertsSent(rows: { account: string; message_key: string
         "UPDATE email_triage SET alert_status = 'sent', alerted_at = CURRENT_TIMESTAMP WHERE account = ? AND message_key = ?"
     );
     db.transaction(() => { for (const r of rows) stmt.run(r.account, r.message_key); })();
+}
+
+// ─── Email invitations (asked about before adding to the calendar) ──────────
+
+export interface EmailInvite {
+    id: number; account: string; message_key: string; sender: string | null; subject: string | null;
+    title: string; event_date: string; start_time: string | null; end_time: string | null;
+    location: string | null; status: string; calendar_event_id: string | null;
+    created_at: string; asked_at: string | null; decided_at: string | null;
+}
+
+export function recordEmailInvite(row: {
+    account: string; message_key: string; sender: string; subject: string; title: string;
+    event_date: string; start_time: string | null; end_time: string | null; location: string | null;
+}): void {
+    db.prepare(
+        `INSERT OR IGNORE INTO email_invites
+           (account, message_key, sender, subject, title, event_date, start_time, end_time, location)
+         VALUES (@account, @message_key, @sender, @subject, @title, @event_date, @start_time, @end_time, @location)`
+    ).run(row);
+}
+
+/** Found but not yet asked about. Past events are expired rather than asked. */
+export function getPendingEmailInvites(today: string): EmailInvite[] {
+    db.prepare("UPDATE email_invites SET status = 'expired' WHERE status IN ('pending','asked') AND event_date < ?").run(today);
+    return db.prepare("SELECT * FROM email_invites WHERE status = 'pending' ORDER BY event_date, start_time").all() as EmailInvite[];
+}
+
+export function markEmailInvitesAsked(ids: number[]): void {
+    const stmt = db.prepare("UPDATE email_invites SET status = 'asked', asked_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'");
+    db.transaction(() => { for (const id of ids) stmt.run(id); })();
+}
+
+/** Invitations the user was asked about and hasn't answered yet, soonest first. */
+export function getOpenEmailInvites(today: string): EmailInvite[] {
+    db.prepare("UPDATE email_invites SET status = 'expired' WHERE status IN ('pending','asked') AND event_date < ?").run(today);
+    return db.prepare("SELECT * FROM email_invites WHERE status = 'asked' ORDER BY asked_at DESC, event_date").all() as EmailInvite[];
+}
+
+export function getEmailInvite(id: number): EmailInvite | undefined {
+    return db.prepare('SELECT * FROM email_invites WHERE id = ?').get(id) as EmailInvite | undefined;
+}
+
+export function setEmailInviteStatus(id: number, status: 'added' | 'declined', calendarEventId?: string): void {
+    db.prepare('UPDATE email_invites SET status = ?, calendar_event_id = COALESCE(?, calendar_event_id), decided_at = CURRENT_TIMESTAMP WHERE id = ?')
+        .run(status, calendarEventId || null, id);
 }
 
 // ─── Unauthorized-sender redirect notices ────────────────────────────────────

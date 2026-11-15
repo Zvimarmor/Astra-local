@@ -177,6 +177,15 @@ App Passwords: `config.gmailAccounts` routes it in `email-fetcher.ts`, on a `gma
 `data/gmail_huji_token.json` (gitignored) from `npm run auth:gmail:huji`. Its message ids are strings,
 so `manage_email`'s `uid` is a string. The token is read per call, so no restart is needed after auth. `npm run test:email-triage -- --live` checks it on sample payloads (two Gemini requests).
 
+**Email invitations become a calendar question (2026-11-15).** The same triage classifier also returns
+an optional `invitation` (title, date, start/end, location; any future date, not only 48h). Valid ones
+go to `email_invites`, and once per invitation (outside quiet hours) the owner gets "📅 היי, תרצה
+שנוסיף את האירוע הזה ליומן?". An invitation that doesn't need a decision is not repeated in the urgent
+alert. On "yes", the agent calls `manage_email` `invites` → `add_invite(invite_id)`, which inserts the
+**stored** row (all-day supported, 1h default length), so the event isn't retyped from untrusted mail.
+Nothing is added without his yes. Only new *unread* mail from the last 24h is scanned.
+`npm run test:email-invites`.
+
 **Transit uses a different Google credential than Calendar (2026-08-27).** `tools/transit.ts` calls
 the Maps **Directions API**, which is key-authenticated (`GOOGLE_MAPS_API_KEY`) and does *not*
 accept the service-account OAuth that `tools/calendar.ts` uses — so having Calendar working tells

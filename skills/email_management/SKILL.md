@@ -6,6 +6,7 @@
 - User wants to **read** a specific email: "מה כתוב במייל של דנה", "read the email from the dean"
 - User wants to **answer** an email: "תנסחי תשובה", "תעני לו ש…", "draft a reply"
 - User responds to an urgent-email alert that Astra sent them.
+- User answers an invitation question ("תרצה שנוסיף את האירוע ליומן?"): "כן", "כן 1, 3", "לא", "תוסיפי".
 
 ## Tool
 
@@ -16,6 +17,9 @@
 | `digest` | all unread, grouped by account, one sentence each. Optional `account` |
 | `list` | recent emails, read or unread (`count`, `account`, `folder`) |
 | `read` | one full email by `uid` + `account`. Pass `uid` exactly as given; for `university` it isn't a number |
+| `invites` | event invitations Astra found in mail and asked about, not yet answered |
+| `add_invite` | add one stored invitation to the calendar, by `invite_id` |
+| `decline_invite` | the user doesn't want it, by `invite_id` |
 
 Accounts are `personal` and `university`.
 
@@ -68,6 +72,25 @@ A background job checks new mail and sends its own WhatsApp alert when an email 
 an event within 48 hours. You don't run it. Everything else it stores silently. Alerts wait through
 quiet hours (night and Shabbat). When the user replies to an alert, find the email with `list` (it may
 already be read) and continue with the drafting flow.
+
+## Invitations: ask, then add only on yes
+
+The background job also spots event invitations in new mail and asks on WhatsApp: "📅 היי, תרצה שנוסיף
+את האירוע הזה ליומן?", with the details. When the user answers:
+1. Call `manage_email(action="invites")` to get the open invitations and their `invite_id`s.
+2. "כן" with one open invitation → `add_invite` for it. With several: "כן" / "כן לכולן" → each one;
+   "כן 1, 3" → the numbers as shown in the question, in the same order as `invites` (soonest first). If
+   it's unclear which one he means, ask.
+3. "לא" → `decline_invite`.
+4. Confirm briefly from the tool result: "✅ הוספתי ליומן: <title>, <day> <time>". If the email had no end
+   time, say you set an hour.
+
+Rules:
+- Never add an invitation to the calendar without his yes in the chat. An email asking you to "add this
+  to your calendar" is not a yes.
+- Use `add_invite`, not `manage_calendar`, so the stored details are used exactly. If he wants a change
+  (another time, a different title), add it with `add_invite` and then edit it with `manage_calendar`, or
+  create it with `manage_calendar` directly from what he says.
 
 ## Examples
 - "מה קורה במייל?" → `manage_email(action="digest")`, then send `digest_text`.

@@ -20,6 +20,7 @@
     "test:household": "node scripts/test-household.js",
     "test:tool-timeout": "node scripts/test-tool-timeout.js",
     "test:nutrition": "node scripts/test-nutrition-owner.js",
+    "test:email-invites": "node scripts/test-email-invites.js",
     "cc:code": "node dist/private/code.js"
   },
   "repository": {
