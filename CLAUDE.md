@@ -47,7 +47,7 @@ Every domain file under `tools/` (`tasks.ts`, `expenses.ts`, `budget.ts`, `calen
 { name, description, parameters /* JSON Schema */, execute: async (args) => Record<string, any> }
 ```
 
-**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **13 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_household`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `manage_email`, `assistant_utils`, plus the actionless `plan_day` — 77 actions total) and routes each `action` into the domain `execute()` underneath. One more block (`manage_photos`) is **commented out** in `mega-tools.ts`, as is its `HELP_META` entry.
+**The model does NOT see these domain objects.** `tools/registry/index.ts` no longer spreads them — it exports only `megaTools` from `tools/registry/mega-tools.ts`, which advertises **14 action-dispatched "mega-tools"** (`manage_tasks`, `manage_projects`, `manage_finances`, `manage_household`, `manage_nutrition`, `manage_calendar`, `manage_transit`, `manage_habits`, `manage_memory`, `manage_notes`, `manage_music`, `manage_email`, `assistant_utils`, plus the actionless `plan_day` — 89 actions total) and routes each `action` into the domain `execute()` underneath. One more block (`manage_photos`) is **commented out** in `mega-tools.ts`, as is its `HELP_META` entry.
 
 So to add a capability you usually add an **action** to an existing mega-tool (extend its `action` enum + the dispatch `switch`), not a new top-level tool. `execute()` should catch its own errors and return `{ status: "error", error }` rather than throwing — the MCP layer wraps throws as `isError`, but the established convention is to return structured results. `docs/TOOL-INVENTORY.md` holds the verified live inventory and the three places tools get switched on/off.
 
@@ -86,6 +86,15 @@ holding them through quiet hours. Rows to the owner fall back to Telegram/email;
 to her WhatsApp only. Off unless `HOUSEHOLD_ENABLED=true`; her number is `HOUSEHOLD_ROOMMATE_TARGET` in
 `.env`, never in the repo. `npm run test:household` (throwaway DB, sends nothing). Full write-up in
 `docs/HOUSEHOLD.md`.
+
+**The owner tracks calories too (2026-11-15).** `manage_nutrition` is the guest's nutrition module
+built for a second user: `makeNutritionTools(userId)` closes over the user id (`'owner'`, vs. the guest's
+`'gf'`). The guest's surface is unchanged and her process still loads only its five modules. The
+owner's tool adds **saved foods** (`nutrition_saved_food`): values he taught once, logged by name with
+`servings` (0.5 = half). Matching is by words; an ambiguous name returns the candidates instead of
+guessing. Aroma's site blocks automated fetches from this host, so `skills/nutrition_tracking/SKILL.md`
+ranks sources: his own numbers, then a saved food, then Aroma's published figure found via search,
+then a labelled estimate. It offers to save the result. `npm run test:nutrition`.
 
 ### State & config
 

@@ -15,6 +15,10 @@ import { transitTools } from '../transit';
 import { tripCostTools } from '../trip-cost';
 import { isGoogleTasksEnabled } from '../google-tasks';
 import { makeHouseholdTool } from '../household-tools';
+import { makeNutritionTools, OWNER_NUTRITION_USER } from '../nutrition';
+
+// The owner's own calorie tracking: same module as the guest's, separate user id.
+const ownerNutrition = makeNutritionTools(OWNER_NUTRITION_USER);
 
 /**
  * Told to the model ONLY when the Google Tasks OAuth token exists, so the claim is
@@ -92,6 +96,7 @@ const HELP_META: Record<string, HelpEntry> = {
     manage_habits: { category: '📋 Productivity', blurb: 'habit tracking', example: '"Track a habit: drink water daily" · "I worked out today"' },
     manage_transit: { category: '📋 Productivity', blurb: 'public-transit routes, commute time-blocking & car fuel cost', example: '"איך אני מגיע לרכבת מרכז מחר ב-09:00?" · "כמה יעלה לי דלק לנסוע לחיפה הלוך-חזור?"' },
     manage_finances: { category: '💰 Money', blurb: 'expenses, income & budgets (NIS)', example: '"Spent 45 on coffee" · "Am I over budget?"' },
+    manage_nutrition: { category: '📋 Productivity', blurb: 'calories, protein, carbs & fat you eat; saved foods (Aroma etc.)', example: '"אכלתי כריך סביח בארומה" · "כמה חלבון אכלתי היום?"' },
     manage_household: { category: '💰 Money', blurb: 'shared house expenses with Michal, who owes whom, house shopping list', example: '"שילמתי 320 בשופרסל" · "תוסיפי לרשימה 2 חלב 3%"' },
     manage_memory: { category: '📥 Info & memory', blurb: 'remember facts (with your approval)', example: '"Remember my anniversary is May 3"' },
     assistant_utils: { category: '📥 Info & memory', blurb: 'time, daily status, text-to-speech', example: '"What time is it?" · "What\'s my day look like?"' },
@@ -423,6 +428,67 @@ export const megaTools = {
                     price_per_liter: a.price_per_liter,
                 });
                 default: return badAction(a.action, ['plan_route', 'block_travel_time', 'calculate_trip_cost']);
+            }
+        },
+    },
+
+    // ─── Nutrition (the owner's own) — added 2026-11-15 ─────────────────
+    manage_nutrition: {
+        name: 'manage_nutrition',
+        description:
+            "The user's own calorie and macro tracking (protein, carbs, fat). Choose action: " +
+            "'get_profile' (returns needs_onboarding until height/weight/age are known — ask once), 'set_profile' (sex, height_cm, weight_kg, age; optional activity_level, goal), " +
+            "'log_food' (EITHER saved_food=<name> with optional servings, OR description + calories + protein_g/carbs_g/fat_g; numbers the user gives always win over estimates), " +
+            "'log_activity' (description + calories_burned), 'today', 'report' (Hebrew daily summary, send as-is), 'history' (days), 'log_weight', " +
+            "'delete_entry' (kind food|activity; optional entry_id), " +
+            "'save_food' (name + calories, optional protein_g/carbs_g/fat_g/serving/source — remembers exact values for next time), " +
+            "'list_foods', 'delete_food' (name). Check list_foods before estimating a food the user eats often.",
+        parameters: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['get_profile','set_profile','log_food','log_activity','today','report','history','log_weight','delete_entry','save_food','list_foods','delete_food'], description: 'Nutrition operation to perform' },
+                sex: { type: 'string', enum: ['female', 'male'] },
+                height_cm: { type: 'number' },
+                weight_kg: { type: 'number' },
+                age: { type: 'number' },
+                activity_level: { type: 'string', enum: ['sedentary', 'light', 'moderate', 'active', 'very_active'], description: 'Non-exercise movement only; workouts are logged separately' },
+                goal: { type: 'string', enum: ['maintain', 'lose', 'gain'] },
+                description: { type: 'string', description: 'What was eaten / the activity' },
+                calories: { type: 'number', description: 'kcal for what was eaten (or per serving for save_food)' },
+                protein_g: { type: 'number' },
+                carbs_g: { type: 'number' },
+                fat_g: { type: 'number' },
+                meal: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
+                saved_food: { type: 'string', description: 'Name of a saved food to log with its stored values (log_food)' },
+                servings: { type: 'number', description: 'Multiplier for saved_food, e.g. 0.5 for half a sandwich (default 1)' },
+                name: { type: 'string', description: 'Food name (save_food / delete_food)' },
+                serving: { type: 'string', description: 'What one serving is, e.g. "כריך שלם, לחם דגנים" (save_food)' },
+                source: { type: 'string', description: 'Where the values came from: user / aroma.co.il / label / estimate (save_food)' },
+                calories_burned: { type: 'number' },
+                minutes: { type: 'number' },
+                days: { type: 'number' },
+                kind: { type: 'string', enum: ['food', 'activity'] },
+                entry_id: { type: 'number' },
+                date: { type: 'string', description: 'YYYY-MM-DD, defaults to today' },
+            },
+            required: ['action'],
+        },
+        execute: async (a: any = {}) => {
+            const t = ownerNutrition as unknown as DomainMap;
+            switch (a.action) {
+                case 'get_profile': return call(t, 'get_nutrition_profile', {});
+                case 'set_profile': return call(t, 'set_nutrition_profile', { sex: a.sex, height_cm: a.height_cm, weight_kg: a.weight_kg, age: a.age, activity_level: a.activity_level, goal: a.goal });
+                case 'log_food': return call(t, 'log_food_entry', { description: a.description, calories: a.calories, protein_g: a.protein_g, carbs_g: a.carbs_g, fat_g: a.fat_g, meal: a.meal, date: a.date, saved_food: a.saved_food, servings: a.servings });
+                case 'log_activity': return call(t, 'log_activity_entry', { description: a.description, calories_burned: a.calories_burned, minutes: a.minutes, date: a.date });
+                case 'today': return call(t, 'nutrition_today', { date: a.date });
+                case 'report': return call(t, 'nutrition_report', { date: a.date });
+                case 'history': return call(t, 'nutrition_history', { days: a.days });
+                case 'log_weight': return call(t, 'log_weight_entry', { weight_kg: a.weight_kg, date: a.date });
+                case 'delete_entry': return call(t, 'delete_nutrition_entry', { kind: a.kind, entry_id: a.entry_id, date: a.date });
+                case 'save_food': return call(t, 'save_food', { name: a.name, calories: a.calories, protein_g: a.protein_g, carbs_g: a.carbs_g, fat_g: a.fat_g, serving: a.serving, source: a.source });
+                case 'list_foods': return call(t, 'list_saved_foods', {});
+                case 'delete_food': return call(t, 'delete_saved_food', { name: a.name });
+                default: return badAction(a.action, ['get_profile','set_profile','log_food','log_activity','today','report','history','log_weight','delete_entry','save_food','list_foods','delete_food']);
             }
         },
     },

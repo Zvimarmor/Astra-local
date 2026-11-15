@@ -15,6 +15,8 @@ import * as store from './nutrition-store';
 
 /** Guest user id. Every row is scoped by this, so a second person costs nothing. */
 export const GUEST_USER = 'gf';
+/** The owner's own tracking (manage_nutrition in registry/mega-tools.ts). */
+export const OWNER_NUTRITION_USER = 'owner';
 
 const SEXES = ['female', 'male'];
 const LEVELS = ['sedentary', 'light', 'moderate', 'active', 'very_active'];
@@ -44,13 +46,16 @@ function statusPayload(s: store.DayStatus) {
 const NEEDS_ONBOARDING = {
     status: 'needs_onboarding',
     message:
-        'No profile yet. Ask her — in Hebrew — for height (cm), weight (kg), age, and whether ' +
-        'she wants to lose / maintain / gain, then call action="set_profile". ' +
+        'No profile yet. Ask the user, in Hebrew, once: height (cm), weight (kg), age, and whether ' +
+        'they want to lose / maintain / gain. Then call action="set_profile". ' +
         'Do not log food or activity before the profile exists.',
     required: ['sex', 'height_cm', 'weight_kg', 'age'],
 };
 
-export const nutritionTools = {
+/** The nutrition tools for ONE user. The user id is closed over, never a parameter. */
+export function makeNutritionTools(userId: string) {
+    const GUEST_USER = userId; // every store call below is scoped to this user
+    return {
     get_nutrition_profile: {
         name: 'get_nutrition_profile',
         description: 'Get the stored body profile and the derived calorie targets.',
@@ -173,23 +178,42 @@ export const nutritionTools = {
                 fat_g: { type: 'number' },
                 meal: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
                 date: { type: 'string' },
+                saved_food: { type: 'string' },
+                servings: { type: 'number' },
             },
-            required: ['description', 'calories'],
+            required: [],
         },
         execute: async (a: any = {}) => {
             try {
                 if (!store.getProfile(GUEST_USER)) return NEEDS_ONBOARDING;
-                const desc = String(a.description || '').trim();
-                const cal = num(a.calories);
+                // A saved food supplies exact values (× servings); explicit numbers win.
+                let saved: store.SavedFood | null = null;
+                const servings = num(a.servings) ?? 1;
+                if (a.saved_food) {
+                    saved = store.getSavedFood(GUEST_USER, String(a.saved_food));
+                    if (!saved) {
+                        const candidates = store.matchingSavedFoods(GUEST_USER, String(a.saved_food));
+                        return {
+                            status: 'error',
+                            error: candidates.length
+                                ? `"${a.saved_food}" matches several saved foods: ${candidates.join(', ')}. Ask which one.`
+                                : `No saved food called "${a.saved_food}". Estimate it (and say so), or ask the user for the values.`,
+                        };
+                    }
+                    if (servings <= 0 || servings > 20) return { status: 'error', error: 'servings must be between 0 and 20.' };
+                }
+                const scaled = (v: number) => Math.round(v * servings * 10) / 10;
+                const desc = String(a.description || '').trim() || (saved ? (servings === 1 ? saved.name : `${saved.name} ×${servings}`) : '');
+                const cal = num(a.calories) ?? (saved ? scaled(saved.calories) : null);
                 if (!desc) return { status: 'error', error: 'description is required.' };
                 if (cal === null || cal < 0) return { status: 'error', error: 'calories must be a non-negative number.' };
 
                 const id = store.logFood(GUEST_USER, {
                     description: desc,
                     calories: cal,
-                    protein_g: num(a.protein_g) ?? 0,
-                    carbs_g: num(a.carbs_g) ?? 0,
-                    fat_g: num(a.fat_g) ?? 0,
+                    protein_g: num(a.protein_g) ?? (saved ? scaled(saved.protein_g) : 0),
+                    carbs_g: num(a.carbs_g) ?? (saved ? scaled(saved.carbs_g) : 0),
+                    fat_g: num(a.fat_g) ?? (saved ? scaled(saved.fat_g) : 0),
                     meal: a.meal,
                     date: a.date,
                 });
@@ -199,6 +223,7 @@ export const nutritionTools = {
                     status: 'success',
                     entry_id: id,
                     message: `Logged "${desc}" — ${Math.round(cal)} kcal.`,
+                    source: saved ? `saved food "${saved.name}" (${saved.source || 'user-provided'})` : 'given/estimated in this message',
                     ...statusPayload(s),
                     // Present only when it matters. The skill requires relaying it.
                     warning: store.buildIntakeWarningHe(s) || undefined,
@@ -364,4 +389,72 @@ export const nutritionTools = {
             }
         },
     },
-};
+
+    save_food: {
+        name: 'save_food',
+        description: 'Save a food with exact values so later logs can use it by name.',
+        parameters: {
+            type: 'object',
+            properties: {
+                name: { type: 'string' }, calories: { type: 'number' }, protein_g: { type: 'number' },
+                carbs_g: { type: 'number' }, fat_g: { type: 'number' }, serving: { type: 'string' }, source: { type: 'string' },
+            },
+            required: ['name', 'calories'],
+        },
+        execute: async (a: any = {}) => {
+            try {
+                const name = String(a.name || '').trim();
+                const cal = num(a.calories);
+                if (!name) return { status: 'error', error: 'name is required.' };
+                if (cal === null || cal < 0 || cal > 5000) return { status: 'error', error: 'calories must be between 0 and 5000 for one serving.' };
+                for (const k of ['protein_g', 'carbs_g', 'fat_g']) {
+                    const v = num(a[k]);
+                    if (v !== null && (v < 0 || v > 500)) return { status: 'error', error: `${k} must be between 0 and 500.` };
+                }
+                const f = store.saveFood(GUEST_USER, {
+                    name, calories: cal,
+                    protein_g: num(a.protein_g) ?? 0, carbs_g: num(a.carbs_g) ?? 0, fat_g: num(a.fat_g) ?? 0,
+                    serving: a.serving ? String(a.serving).slice(0, 120) : null,
+                    source: a.source ? String(a.source).slice(0, 200) : null,
+                });
+                return { status: 'success', message: `Saved "${f.name}" — ${Math.round(f.calories)} kcal per serving.`, food: f };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+
+    list_saved_foods: {
+        name: 'list_saved_foods',
+        description: 'List the saved foods and their values.',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => {
+            try {
+                const foods = store.listSavedFoods(GUEST_USER);
+                return { status: 'success', count: foods.length, foods };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+
+    delete_saved_food: {
+        name: 'delete_saved_food',
+        description: 'Remove a saved food by its exact name.',
+        parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        execute: async (a: any = {}) => {
+            try {
+                return store.deleteSavedFood(GUEST_USER, String(a.name || ''))
+                    ? { status: 'success', message: `Removed saved food "${a.name}".` }
+                    : { status: 'error', error: `No saved food called "${a.name}".` };
+            } catch (err: any) {
+                return { status: 'error', error: err.message };
+            }
+        },
+    },
+    };
+}
+
+/** The guest's tools (registry/guest-tools.ts). Unchanged surface: she isn't offered the
+ *  saved-food actions, only the original nine. */
+export const nutritionTools = makeNutritionTools(GUEST_USER);

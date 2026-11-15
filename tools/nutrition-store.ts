@@ -76,6 +76,24 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_nutrition_activity_day ON nutrition_activity(user_id, date);
 `);
 
+// Foods a user taught once ("כריך סביח מארומה" = 574 kcal…), so later logs use exact
+// values instead of a fresh estimate. Keyed by user like every other nutrition table.
+db.exec(`
+    CREATE TABLE IF NOT EXISTS nutrition_saved_food (
+        user_id TEXT NOT NULL,
+        name_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        calories REAL NOT NULL,
+        protein_g REAL NOT NULL DEFAULT 0,
+        carbs_g REAL NOT NULL DEFAULT 0,
+        fat_g REAL NOT NULL DEFAULT 0,
+        serving TEXT,
+        source TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, name_key)
+    );
+`);
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 export type Sex = 'female' | 'male';
@@ -387,8 +405,9 @@ export function buildDailyReportHe(userId: string, date?: string): string | null
     const lines: string[] = [`📊 *סיכום יומי — ${s.date}*`, ''];
 
     if (t.food_count === 0 && t.activity_count === 0) {
-        lines.push('לא רשמת היום כלום 🤷‍♀️', '', `היעד היומי שלך הוא ${targets.daily_target} קלוריות.`,
-            'מחר נתחיל מחדש — פשוט תשלחי לי מה אכלת ומה עשית.');
+        const male = s.profile.sex === 'male';
+        lines.push(`לא רשמת היום כלום ${male ? '🤷‍♂️' : '🤷‍♀️'}`, '', `היעד היומי שלך הוא ${targets.daily_target} קלוריות.`,
+            `מחר נתחיל מחדש — פשוט ${male ? 'תשלח' : 'תשלחי'} לי מה אכלת ומה עשית.`);
         return lines.join('\n');
     }
 
@@ -469,7 +488,69 @@ export function buildIntakeWarningHe(s: DayStatus, lowThreshold: number = 200): 
         return `⚠️ עברת את היעד היומי ב-${Math.abs(s.remaining)} קלוריות.`;
     }
     if (s.remaining <= lowThreshold) {
-        return `⏳ נשארו לך רק ${s.remaining} קלוריות להיום — שימי לב למה שאת אוכלת מכאן.`;
+        return s.profile.sex === 'male'
+            ? `⏳ נשארו לך רק ${s.remaining} קלוריות להיום — שים לב למה שאתה אוכל מכאן.`
+            : `⏳ נשארו לך רק ${s.remaining} קלוריות להיום — שימי לב למה שאת אוכלת מכאן.`;
     }
     return null;
+}
+
+// ─── Saved foods ──────────────────────────────────────────────────────
+
+export interface SavedFood {
+    name: string; calories: number; protein_g: number; carbs_g: number; fat_g: number;
+    serving: string | null; source: string | null; updated_at: string;
+}
+
+/** Lookup key: lower-case, single spaces, no punctuation, so "כריך  סביח," == "כריך סביח". */
+export function foodKey(name: string): string {
+    return String(name || '').toLowerCase().replace(/["'`״׳.,;:!?()\[\]-]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function saveFood(userId: string, f: Omit<SavedFood, 'updated_at'>): SavedFood {
+    db.prepare(`
+        INSERT INTO nutrition_saved_food (user_id, name_key, name, calories, protein_g, carbs_g, fat_g, serving, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, name_key) DO UPDATE SET name = excluded.name, calories = excluded.calories,
+            protein_g = excluded.protein_g, carbs_g = excluded.carbs_g, fat_g = excluded.fat_g,
+            serving = excluded.serving, source = excluded.source, updated_at = CURRENT_TIMESTAMP
+    `).run(userId, foodKey(f.name), f.name.trim(), f.calories, f.protein_g, f.carbs_g, f.fat_g, f.serving, f.source);
+    return getSavedFood(userId, f.name)!;
+}
+
+/** Every word of the query appears in the saved name (or the other way round). */
+function foodMatches(savedKey: string, queryKey: string): boolean {
+    const saved = new Set(savedKey.split(' '));
+    const query = queryKey.split(' ');
+    return query.every(w => saved.has(w)) || [...saved].every(w => query.includes(w));
+}
+
+/** Exact key match first; otherwise the single saved food whose name contains the query
+ *  (or vice versa). Ambiguous partial matches return null, so nothing is guessed. */
+export function getSavedFood(userId: string, name: string): SavedFood | null {
+    const key = foodKey(name);
+    if (!key) return null;
+    const cols = 'name, calories, protein_g, carbs_g, fat_g, serving, source, updated_at';
+    const exact = db.prepare(`SELECT ${cols} FROM nutrition_saved_food WHERE user_id = ? AND name_key = ?`).get(userId, key) as SavedFood | undefined;
+    if (exact) return exact;
+    const all = db.prepare(`SELECT name_key, ${cols} FROM nutrition_saved_food WHERE user_id = ?`).all(userId) as (SavedFood & { name_key: string })[];
+    const hits = all.filter(r => foodMatches(r.name_key, key));
+    if (hits.length !== 1) return null;
+    const { name_key: _k, ...food } = hits[0];
+    return food;
+}
+
+/** Candidate names for an ambiguous query (used to ask the user which one). */
+export function matchingSavedFoods(userId: string, name: string): string[] {
+    const key = foodKey(name);
+    return (db.prepare('SELECT name, name_key FROM nutrition_saved_food WHERE user_id = ?').all(userId) as { name: string; name_key: string }[])
+        .filter(r => key && foodMatches(r.name_key, key)).map(r => r.name);
+}
+
+export function listSavedFoods(userId: string): SavedFood[] {
+    return db.prepare('SELECT name, calories, protein_g, carbs_g, fat_g, serving, source, updated_at FROM nutrition_saved_food WHERE user_id = ? ORDER BY name').all(userId) as SavedFood[];
+}
+
+export function deleteSavedFood(userId: string, name: string): boolean {
+    return db.prepare('DELETE FROM nutrition_saved_food WHERE user_id = ? AND name_key = ?').run(userId, foodKey(name)).changes > 0;
 }

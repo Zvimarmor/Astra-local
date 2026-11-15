@@ -19,6 +19,7 @@
     "test:email-triage": "node scripts/test-email-triage.js",
     "test:household": "node scripts/test-household.js",
     "test:tool-timeout": "node scripts/test-tool-timeout.js",
+    "test:nutrition": "node scripts/test-nutrition-owner.js",
     "cc:code": "node dist/private/code.js"
   },
   "repository": {
